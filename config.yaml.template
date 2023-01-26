@@ -1,4 +1,4 @@
-DEFAULT_MOBILE_REGION: 'CN'
+#DEFAULT_MOBILE_REGION:  #
 
 DEVICES:
   #/dev/ttyUSDB<?>:  # port, e.g. /dev/ttyUSB1

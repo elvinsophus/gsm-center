@@ -9,7 +9,7 @@ from threading import Thread
 from sys import exc_info
 from traceback import format_tb
 from logging import getLogger
-from typing import NamedTuple, List, Tuple
+from typing import NamedTuple, List, Tuple, Dict
 from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             IncomingCall, SentSms, ReceivedSms, StatusReport,
                             PinRequiredError, IncorrectPinError)
@@ -258,9 +258,9 @@ class GSMCenter:
         )
         self._pin = options.pin
         self._own_number = ''
-        self._store = GSMStore(self._own_number)
+        self._store: GSMStore | None = None
         self._is_alive = True
-        self._loop_thread = None
+        self._loop_thread: Thread | None = None
         self._init()
         self.logger.info(f'initiation succeeded')
 
@@ -278,8 +278,9 @@ class GSMCenter:
     def _init(self):
         self._connect()
         self._own_number = self._check_own_number()
+        self._store = GSMStore(self._own_number)
         self.check_network_coverage()
-        self._check_modem_stored_smss(log=True)
+        self._check_modem_stored_smss()
         self._loop_thread = loop_thread = Thread(target=self._loop)
         loop_thread.start()
 
@@ -377,14 +378,12 @@ class GSMCenter:
         logger.info(f'network coverage is {coverage}')
         return coverage
 
-    def _check_modem_stored_smss(self, *, log: bool = False):
+    def _check_modem_stored_smss(self):
         if not self._options.sms_enabled:
             return
         if not self._connect():
             return
-        logger = self.logger
-        if log:
-            logger.info(f'processing SMSs stored in MODEM...')
+        self.logger.info(f'processing SMSs stored in MODEM...')
         self._modem.processStoredSms()
 
     def _handle_incoming_call(self, call: IncomingCall):
@@ -446,11 +445,11 @@ class GSMCenter:
             return None
 
         logger = self.logger
-        recipient = self.normalise_number(recipient)
+        norm_recipient = self.normalise_number(recipient)
         sms_db = self._store.sms_db
         statuses = SentSMSStatus
         mid = sms_db.insert(
-            SMSType.SENT, self._own_number, recipient, content,
+            SMSType.SENT, self._own_number, norm_recipient, content,
             statuses.PENDING)
 
         logger.info(f'sending SMS #{mid} to {recipient!r}...')
@@ -489,10 +488,20 @@ class GSMCenter:
         return mid
 
     def read_sms(self, mid: int) -> StoredSMS:
-        if self._store.get_received_sms(mid) is None:
+        if (sms := self._store.get_received_sms(mid)) is None:
             raise ValueError(f'SMS #{mid} not found')
-        self._store.sms_db.update_status(mid, ReceivedSMSStatus.READ)
+        if (status := sms.status) is ReceivedSMSStatus.UNREAD:
+            self._store.sms_db.update_status(mid, ReceivedSMSStatus.READ)
+        elif status is not ReceivedSMSStatus.READ:
+            raise RuntimeError(
+                f'cannot read SMS #{mid} for its status is {status!r}')
         return self._store.get_sms(mid)
+
+    def mark_all_received_as_read(self) -> int:
+        count = self._store.sms_db.batch_update_status(
+            SMSType.RECEIVED, ReceivedSMSStatus.READ, ReceivedSMSStatus.UNREAD)
+        self.logger.info(f'marked {count} received SMS(s) as read')
+        return count
 
     def _loop(self, *,
               coverage_interval: int = 300,
@@ -554,8 +563,8 @@ class GSMCenter:
 
     @classmethod
     def loop_all(cls):
-        instances = []
-        threads = {}
+        instances: List[cls] = []
+        threads: Dict[str, Thread] = {}
         stopped = False
         logger = cls.get_class_logger()
 
@@ -586,12 +595,12 @@ class GSMCenter:
 
         try:
             while True:
-                sleep(10)
-                t: Thread
+                sleep(60)
                 for d, t in threads.items():
-                    if not t.is_alive():
-                        logger.warning(
-                            f'thread for {d} is dead; recreating...')
-                        new_thread(d)
+                    if t.is_alive():
+                        continue
+                    logger.warning(
+                        f'thread for {d} is dead; recreating...')
+                    new_thread(d)
         finally:
             stop_all()

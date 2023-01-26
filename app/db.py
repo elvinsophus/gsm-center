@@ -350,6 +350,24 @@ class SmsDB(BaseDB):
             [*values.values(), id_]
         ).rowcount)
 
+    def batch_update_status(self, type_: SMSType | str,
+                            status: str | Enum,
+                            from_status: str | Enum = None) -> int:
+        where = {'type': type_.name if isinstance(type_, Enum) else type_}
+        if from_status is not None:
+            where['status'] = (from_status.name
+                               if isinstance(from_status, Enum)
+                               else from_status)
+        where_clause = (f"where {' and '.join(f'`{w}` = ?' for w in where)}"
+                        if where else '')
+        return self._execute(
+            f"update `{self.name}` "
+            f"set `status` = ?, `updated_at` = ? "
+            f"{where_clause}",
+            [(status.name if isinstance(status, Enum) else status,
+              int(time()), *where.values())]
+        ).rowcount
+
     def delete(self, id_: int) -> bool:
         return bool(self._execute(
             f"delete from `{self.name}` where `id` = ?",

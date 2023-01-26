@@ -19,11 +19,11 @@ def update_record():
     if not isinstance(args, dict):
         return 'invalid argument', 400
     if not (sender := args.get('sender')):
-        return 'argument `sender` not provided', 400
+        return 'parameter `sender` not provided', 400
     if not (recipient := args.get('recipient')):
-        return 'argument `recipient` not provided', 400
+        return 'parameter `recipient` not provided', 400
     if not (content := args.get('content')):
-        return 'argument `content` not provided', 400
+        return 'parameter `content` not provided', 400
 
     try:
         mid = GSMStore.add_pending_sms(sender, recipient, content)
