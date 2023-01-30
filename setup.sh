@@ -42,8 +42,10 @@ fi
 info "Installing requirements..."
 source ${VENV_DIR}/bin/activate && pip install -r requirements.txt
 
-info "Generating config.yaml file; please fill in required configurations"
-cp config.yaml.template config.yaml
-chmod 600 config.yaml
+if [[ ! -f "config.yaml" ]]; then
+  info "Generating config.yaml file; please fill in required configurations"
+  cp config.yaml.template config.yaml
+  chmod 600 config.yaml
+fi
 
 info "Setup finished!"

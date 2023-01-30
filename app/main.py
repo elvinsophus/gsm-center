@@ -15,7 +15,8 @@ from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             PinRequiredError, IncorrectPinError)
 from .config import config
 from .db import SIMCardDB, PendingSMSDB, SmsDB
-from .utils import timestamp_to_datetime, safe
+from .utils import (timestamp_to_datetime, safe, remove_prefix,
+                    run_system_command)
 import phonenumbers
 
 
@@ -208,6 +209,8 @@ class DeviceOptions(NamedTuple):
     own_number: str = None
     sms_enabled: bool = False
     call_enabled: bool = False
+    on_sms_received: str = ''
+    on_sms_received_env: dict = None
 
     @classmethod
     def from_dict(cls, d: dict) -> 'DeviceOptions':
@@ -222,6 +225,10 @@ class DeviceOptions(NamedTuple):
             args['sms_enabled'] = bool(sms_enabled)
         if (call_enabled := d.get('call_enabled')) is not None:
             args['call_enabled'] = bool(call_enabled)
+        if on_sms_received := d.get('on_sms_received'):
+            args['on_sms_received'] = str(on_sms_received)
+        if on_sms_received_env := d.get('on_sms_received_env'):
+            args['on_sms_received_env'] = on_sms_received_env
         return cls(**args)
 
 
@@ -355,6 +362,15 @@ class GSMCenter:
             raise
         return f'+{parsed.country_code}{parsed.national_number}'
 
+    @classmethod
+    def simplify_number(cls, number: str) -> str:
+        number = cls.normalise_number(number)
+        if not (region := config.get('DEFAULT_MOBILE_REGION')):
+            return number
+        if not (country_code := phonenumbers.country_code_for_region(region)):
+            return number
+        return remove_prefix(number, f'+{country_code}')
+
     def _update_sim_card_status(self):
         if not self._connect():
             return
@@ -398,14 +414,23 @@ class GSMCenter:
             f'received a new SMS from {sender!r}, length={len(content)}')
         self._store.sms_db.insert(
             SMSType.RECEIVED,
-            self._own_number,
+            (recipient := self._own_number),
             sender,
             content,
             (ReceivedSMSStatus.READ
              if sms.status == ReceivedSms.STATUS_RECEIVED_READ
              else ReceivedSMSStatus.UNREAD),
-            int(sms.time.timestamp())
+            (at := int(sms.time.timestamp()))
         )
+        options = self._options
+        if cmd := options.on_sms_received:
+            run_system_command(cmd.format(
+                SMS_SENDER=sender,
+                SMS_RECIPIENT=recipient,
+                SMS_CONTENT=content,
+                SMS_TIMESTAMP=at,
+                SMS_TIME_STR=timestamp_to_datetime(at)
+            ), env=options.on_sms_received_env)
 
     def _handle_status_report(self, report: StatusReport | ReceivedSms):
         self.logger.info(f'received a new status report {report}')
@@ -445,17 +470,17 @@ class GSMCenter:
             return None
 
         logger = self.logger
-        norm_recipient = self.normalise_number(recipient)
+        recipient = self.normalise_number(recipient)
         sms_db = self._store.sms_db
         statuses = SentSMSStatus
         mid = sms_db.insert(
-            SMSType.SENT, self._own_number, norm_recipient, content,
+            SMSType.SENT, self._own_number, recipient, content,
             statuses.PENDING)
 
         logger.info(f'sending SMS #{mid} to {recipient!r}...')
         try:
             sms: SentSms = self._modem.sendSms(
-                recipient, content,
+                self.simplify_number(recipient), content,
                 waitForDeliveryReport=bool(wait_for_delivery),
                 deliveryTimeout=(10 if isinstance(wait_for_delivery, bool)
                                  else wait_for_delivery))

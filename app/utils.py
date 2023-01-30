@@ -7,11 +7,13 @@ from json import dumps as json_dumps
 from enum import EnumMeta, Enum, IntFlag
 from datetime import datetime, date, tzinfo, timedelta, timezone
 from re import compile as re_compile, I as RE_I
-from typing import Tuple, Callable, Iterator, Type, Union, Any
+from typing import Tuple, List, Dict, Callable, Iterator, Type, Union, Any
 from logging import getLogger
 from dateutil.tz import UTC
 from dateutil.relativedelta import relativedelta
 from ruamel.yaml import YAML
+import subprocess
+import shlex
 
 
 _logger = getLogger(__name__)
@@ -223,3 +225,29 @@ _RE_CAMEL = re_compile(r'((?<=[a-z0-9])[A-Z]|(?!^)(?<!_)[A-Z](?=[a-z]))')
 
 def camel_to_underscore(text: str) -> str:
     return _RE_CAMEL.sub(r'_\1', text).lower()
+
+
+def run_system_command(cmd: Union[List[str], str], user: str = None, *,
+                       env: Dict[str, str] = None,
+                       detached: bool = False, log_output: bool = False
+                       ) -> str:
+    _logger.info(f'executing command: {cmd}, {user=}, {detached=}')
+    if isinstance(cmd, str):
+        cmd = shlex.split(cmd)
+    if detached:
+        # noinspection PyArgumentList
+        subprocess.Popen(cmd, user=user, env=env, start_new_session=True)
+        return ''
+    try:
+        # noinspection PyArgumentList
+        r = subprocess.run(cmd, user=user, env=env,
+                           check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f'command {cmd!r} failed with status code {e.returncode}: '
+            f'{e.stderr}')
+    else:
+        output = r.stdout.decode()
+    if log_output:
+        _logger.info(output)
+    return output

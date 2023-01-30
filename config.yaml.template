@@ -7,3 +7,5 @@ DEVICES:
     #own_number:   # own phone number, e.g. '+8613512345678'
     #sms_enabled:  # whether SMSs are enabled, e.g. yes
     #call_enabled:  # whether calls are enabled, e.g. yes
+    #on_sms_received:  # command to execute when sms received (variables: SMS_SENDER, SMS_RECIPIENT, SMS_CONTENT, SMS_TIMESTAMP, SMS_TIME_STR)
+    #on_sms_received_env:  # environment variables for `on_sms_received`
