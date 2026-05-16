@@ -2,12 +2,11 @@
 
 from logging import getLogger, Logger
 from logging.config import dictConfig
-from typing import Optional
 from flask import Flask
 
 
-app: Optional[Flask] = None
-_logger: Optional[Logger] = None
+app: Flask | None = None
+_logger: Logger | None = None
 
 
 def create_app():
@@ -16,7 +15,7 @@ def create_app():
 
     _init_logging()
     _init_api(app)
-    _logger.info('app initiated successfully')
+    (_logger.info if _logger else print)('app initiated successfully')
 
     return app
 

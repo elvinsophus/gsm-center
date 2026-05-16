@@ -7,7 +7,8 @@ from json import dumps as json_dumps
 from enum import EnumMeta, Enum, IntFlag
 from datetime import datetime, date, tzinfo, timedelta, timezone
 from re import compile as re_compile, I as RE_I
-from typing import Tuple, List, Dict, Callable, Iterator, Type, Union, Any
+from typing import Any
+from collections.abc import Callable, Iterator
 from logging import getLogger
 from dateutil.tz import UTC
 from dateutil.relativedelta import relativedelta
@@ -19,7 +20,7 @@ import shlex
 _logger = getLogger(__name__)
 
 
-AmountType = Union[Decimal, str, int]
+AmountType = Decimal | str | int
 
 
 def amount_to_str(amount: AmountType, decimals: int = None,
@@ -63,11 +64,8 @@ def remove_suffix(text: str, suffix: str) -> str:
 def safe(func: Callable, *,
          default: Any = None,
          catch_exc: bool = False,
-         raise_exc: Union[Type[Exception],
-                          Tuple[Type[Exception], ...]] = None,
-         mute_exc: Union[bool,
-                         Type[Exception],
-                         Tuple[Type[Exception], ...]] = False
+         raise_exc: type[Exception] | tuple[type[Exception], ...] = None,
+         mute_exc: bool | type[Exception] | tuple[type[Exception], ...] = False
          ):
     """
     Decorator to silence exceptions from a function call.
@@ -118,7 +116,7 @@ _UNITS_PL = _UNIT_ATTRS
 _UNITS_ABBR = 'd', 'h', 'm', 's'
 
 
-def timedelta_to_str(delta: Union[timedelta, float, int], *,
+def timedelta_to_str(delta: timedelta | float | int, *,
                      abbr: bool = False) -> str:
     """
     Presents a delta of time as a human-readable string. Units range from day
@@ -145,12 +143,12 @@ def timedelta_to_str(delta: Union[timedelta, float, int], *,
     """
     if isinstance(delta, timedelta):
         if delta.total_seconds() < 0:
-            raise ValueError(f'negative time delta is not supported: {delta}')
+            raise ValueError(f'negative time delta is not supported: {delta!r}')
         s, ms = divmod(delta.total_seconds(), 1)
         delta = relativedelta(seconds=int(s), microseconds=int(ms * 1000000))
     elif isinstance(delta, (float, int)):
         if delta < 0:
-            raise ValueError(f'negative time delta is not supported: {delta}')
+            raise ValueError(f'negative time delta is not supported: {delta!r}')
         s, ms = divmod(delta, 1)
         delta = relativedelta(seconds=int(s))
     else:
@@ -227,8 +225,8 @@ def camel_to_underscore(text: str) -> str:
     return _RE_CAMEL.sub(r'_\1', text).lower()
 
 
-def run_system_command(cmd: Union[List[str], str], user: str = None, *,
-                       env: Dict[str, str] = None,
+def run_system_command(cmd: list[str] | str, user: str = None, *,
+                       env: dict[str, str] = None,
                        detached: bool = False, log_output: bool = False
                        ) -> str:
     _logger.info(f'executing command: {cmd}, {user=}, {detached=}')

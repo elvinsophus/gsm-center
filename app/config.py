@@ -2,7 +2,8 @@
 
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping, Any
+from typing import Any
+from collections.abc import Mapping
 from logging import getLogger
 from .utils import load_yaml
 
@@ -48,7 +49,7 @@ def reload_one(key: str):
         value = conf[key]
     except KeyError:
         _logger.error(f'key {key!r} not found')
-        return
+        return None
     _config[key] = value
     return value
 

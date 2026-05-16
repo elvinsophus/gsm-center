@@ -25,6 +25,9 @@ def update_record():
     if not (content := args.get('content')):
         return 'parameter `content` not provided', 400
 
+    sender: str
+    recipient: str
+    content: str
     try:
         mid = GSMStore.add_pending_sms(sender, recipient, content)
     except ValueError as e:

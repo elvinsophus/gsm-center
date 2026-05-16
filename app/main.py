@@ -9,7 +9,7 @@ from threading import Thread
 from sys import exc_info
 from traceback import format_tb
 from logging import getLogger
-from typing import NamedTuple, List, Tuple, Dict
+from typing import NamedTuple
 from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             IncomingCall, SentSms, ReceivedSms, StatusReport,
                             PinRequiredError, IncorrectPinError)
@@ -81,6 +81,9 @@ class GSMStore:
             own_number = GSMCenter.normalise_number(own_number)
         self._own_number = own_number
 
+    def __repr__(self):
+        return f'<{type(self).__name__}>'
+
     def get_pending_sms(self, mid: int) -> PendingSMS | None:
         if not (row := self.pending_sms_db.get(mid)):
             return None
@@ -88,7 +91,7 @@ class GSMStore:
 
     def list_pending_smss(self, *,
                           status: PendingSMSStatus = None,
-                          limit: int = 10) -> List[PendingSMS]:
+                          limit: int = 10) -> list[PendingSMS]:
         return list(map(
             self.pending_sms_from_db,
             self.pending_sms_db.list(
@@ -109,16 +112,16 @@ class GSMStore:
         return self.sms_from_db(row)
 
     def list_smss(self, type_: SMSType = None, *,
-                  other_number: str = '',
-                  status: SentSMSStatus = None,
-                  limit: int = 10) -> List[StoredSMS]:
+                  other_number: str | None = None,
+                  status: SentSMSStatus | None = None,
+                  limit: int = 10) -> list[StoredSMS]:
         if other_number:
             other_number = GSMCenter.normalise_number(other_number)
         return list(map(
             self.sms_from_db,
             self.sms_db.list(
                 type_, self._own_number,
-                other_number=other_number, status=status, limit=limit
+                other_number=other_number or '', status=status, limit=limit
             )
         ))
 
@@ -146,7 +149,7 @@ class GSMStore:
                        recipient: str = '',
                        status: SentSMSStatus = None,
                        limit: int = 10
-                       ) -> List[StoredSMS]:
+                       ) -> list[StoredSMS]:
         return self.list_smss(
             SMSType.SENT, other_number=recipient, status=status, limit=limit)
 
@@ -159,13 +162,13 @@ class GSMStore:
 
     def list_received_smss(self, *,
                            sender: str = None,
-                           status: ReceivedSMSStatus = None,
+                           status: SentSMSStatus = None,
                            limit: int = 10
-                           ) -> List[StoredSMS]:
+                           ) -> list[StoredSMS]:
         return self.list_smss(
             SMSType.RECEIVED, other_number=sender, status=status, limit=limit)
 
-    def preview_dialogs(self, limit: int = 10) -> List[Tuple[StoredSMS, int]]:
+    def preview_dialogs(self, limit: int = 10) -> list[tuple[StoredSMS, int]]:
         from_db = self.sms_from_db
         return [
             (from_db(row), row['id_count']) for row
@@ -184,15 +187,16 @@ class GSMStore:
     @classmethod
     def list_active_own_numbers(cls, threshold: int = 60, *,
                                 call_enabled: bool = None,
-                                sms_enabled: bool = None) -> List[str]:
+                                sms_enabled: bool = None) -> list[str]:
         return cls.sim_card_db.list_phone_numbers(
             int(time()) - threshold,
             call_enabled=call_enabled, sms_enabled=sms_enabled)
 
     @classmethod
     def add_pending_sms(cls, sender: str, recipient: str, content: str
-                        ) -> int:
+                        ) -> int | None:
         sender = GSMCenter.normalise_number(sender)
+        recipient = GSMCenter.normalise_number(recipient)
         threshold = 60
         if sender not in cls.list_active_own_numbers(threshold,
                                                      sms_enabled=True):
@@ -215,7 +219,8 @@ class DeviceOptions(NamedTuple):
     @classmethod
     def from_dict(cls, d: dict) -> 'DeviceOptions':
         args = {}
-        if (baud_rate := d.get('baud_rate', None)) is not None:
+        if (baud_rate := d.get('baudrate', None)) is not None:
+            baud_rate: str
             args['baud_rate'] = int(baud_rate)
         if pin := d.get('pin'):
             args['pin'] = str(pin)
@@ -265,10 +270,16 @@ class GSMCenter:
         )
         self._pin = options.pin
         self._own_number = ''
-        self._store: GSMStore | None = None
         self._is_alive = True
-        self._loop_thread: Thread | None = None
-        self._init()
+
+        self._connect()
+        self._own_number = self._check_own_number()
+        self._store = GSMStore(self._own_number)
+        self.check_network_coverage()
+        self._check_modem_stored_smss()
+        self._loop_thread = loop_thread = Thread(target=self._loop)
+        loop_thread.start()
+
         self.logger.info(f'initiation succeeded')
 
     def __repr__(self):
@@ -307,7 +318,6 @@ class GSMCenter:
         except Exception as e:
             self.logger.error(f'connection failed due to {e!r}')
             return False
-        self._is_connected = True
         self.logger.info(f'successfully connected to MODEM')
         return True
 
@@ -367,6 +377,7 @@ class GSMCenter:
         number = cls.normalise_number(number)
         if not (region := config.get('DEFAULT_MOBILE_REGION')):
             return number
+        region: str
         if not (country_code := phonenumbers.country_code_for_region(region)):
             return number
         return remove_prefix(number, f'+{country_code}')
@@ -387,7 +398,7 @@ class GSMCenter:
         logger.info('checking network coverage...')
         try:
             coverage = self._modem.waitForNetworkCoverage(timeout)
-        except TimeoutError:
+        except GSMTimeout:
             logger.error(f'network signal strength is insufficient '
                          f'(timeout {timeout!r} reached)')
             return 0
@@ -466,7 +477,7 @@ class GSMCenter:
         if not self._options.sms_enabled:
             raise RuntimeError(f'SMS sending is not enabled on this device')
 
-        if self.check_network_coverage() < 0:
+        if self.check_network_coverage() <= 0:
             return None
 
         logger = self.logger
@@ -476,6 +487,8 @@ class GSMCenter:
         mid = sms_db.insert(
             SMSType.SENT, self._own_number, recipient, content,
             statuses.PENDING)
+        if mid is None:
+            raise RuntimeError('SMS could not be inserted into DB')
 
         logger.info(f'sending SMS #{mid} to {recipient!r}...')
         try:
@@ -512,7 +525,7 @@ class GSMCenter:
 
         return mid
 
-    def read_sms(self, mid: int) -> StoredSMS:
+    def read_sms(self, mid: int) -> StoredSMS | None:
         if (sms := self._store.get_received_sms(mid)) is None:
             raise ValueError(f'SMS #{mid} not found')
         if (status := sms.status) is ReceivedSMSStatus.UNREAD:
@@ -588,8 +601,8 @@ class GSMCenter:
 
     @classmethod
     def loop_all(cls):
-        instances: List[cls] = []
-        threads: Dict[str, Thread] = {}
+        instances: list[cls] = []
+        threads: dict[str, Thread] = {}
         stopped = False
         logger = cls.get_class_logger()
 

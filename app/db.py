@@ -1,17 +1,28 @@
 # -*- coding: utf-8 -*-
 
-from threading import Semaphore, local
-from time import time
+from collections.abc import Mapping
 from datetime import datetime
-from functools import partial
 from enum import Enum
-from typing import Tuple, List, Mapping, Union, Optional
-from .utils import (NamedObject, camel_to_underscore, compact_json_dumps,
+from functools import partial
+from threading import local
+from time import time
+from typing import Any
+from .config import config
+from .utils import (camel_to_underscore, compact_json_dumps,
                     remove_prefix, remove_suffix)
 import sqlite3
 
 
-_EMPTY = NamedObject('Empty')
+class _Empty:
+    __slots__ = ()
+    def __repr__(self) -> str: return 'EMPTY'
+    def __bool__(self) -> bool: return False
+
+_EMPTY = _Empty()
+
+
+def _enum_name(value: str | Enum) -> str:
+    return value.name if isinstance(value, Enum) else value
 
 
 class _BaseDBMeta(type):
@@ -38,10 +49,9 @@ class BaseDB(metaclass=_BaseDBMeta):
 
     name: str
     schema: str
-    indices: Mapping[str, Tuple[str]] = None
+    indices: Mapping[str, tuple[str, ...]] | None = None
 
-    _DB_FILE_NAME = 'db.sqlite3'
-    _db_connexion_lock = Semaphore()
+    _DB_FILE_NAME = config.get('SQLITE3_FILE') or 'db.sqlite3'
     _threading_local = local()
 
     def __new__(cls, *args, **kwargs):
@@ -57,9 +67,7 @@ class BaseDB(metaclass=_BaseDBMeta):
         cls = BaseDB
         th_local = cls._threading_local
         if (db := getattr(th_local, 'db', None)) is None:
-            with cls._db_connexion_lock:
-                if (db := getattr(th_local, 'db', None)) is None:
-                    th_local.db = db = sqlite3.connect(cls._DB_FILE_NAME)
+            th_local.db = db = sqlite3.connect(cls._DB_FILE_NAME)
         return db
 
     def _init_db(self):
@@ -70,15 +78,18 @@ class BaseDB(metaclass=_BaseDBMeta):
         """)
         for idx, columns in (self.indices or {}).items():
             cursor.execute(f"""
-                create index if not exists `{idx}` on `{self.name}` 
+                create index if not exists `{idx}` on `{self.name}`
                 ({", ".join(columns)})
             """)
         return db
 
     @classmethod
-    def _execute(cls, sql: str, parameters: Union[list, tuple] = ()):
+    def _execute(cls, sql: str, parameters: list | tuple = ()):
         with (_db := cls._db()):
             return _db.execute(sql, parameters)
+
+
+_builtin_list = list
 
 
 class SIMCardDB(BaseDB):
@@ -94,7 +105,7 @@ class SIMCardDB(BaseDB):
     def list(self,
              since: datetime | int = None, *,
              call_enabled: bool = None,
-             sms_enabled: bool = None) -> List[dict]:
+             sms_enabled: bool = None) -> list[dict]:
         where = {}
         if call_enabled is not None:
             where["`call_enabled` = ?"] = int(call_enabled)
@@ -114,7 +125,7 @@ class SIMCardDB(BaseDB):
 
     def list_phone_numbers(self, since: datetime | int = None, *,
                            call_enabled: bool = None,
-                           sms_enabled: bool = None) -> List[str]:
+                           sms_enabled: bool = None) -> _builtin_list[str]:
         return [
             r['phone_number']
             for r in self.list(
@@ -158,14 +169,13 @@ class PendingSMSDB(BaseDB):
         `status` TEXT NOT NULL,
         `extra` TEXT
     '''
-    indices = {'sender_status_idx': {'sender', 'status'}}
+    indices = {'sender_status_idx': ('sender', 'status')}
 
     def list(self, sender: str, *,
-             status: str | Enum = None, limit: int = 10) -> List[dict]:
+             status: str | Enum = None, limit: int = 10) -> list[dict]:
         where = {'sender': sender}
         if status is not None:
-            where['status'] = (status.name if isinstance(status, Enum)
-                               else status)
+            where['status'] = _enum_name(status)
         where_clause = (f"where {' and '.join(f'`{w}` = ?' for w in where)}"
                         if where else '')
         cursor = self._execute(
@@ -176,7 +186,7 @@ class PendingSMSDB(BaseDB):
         cols = [c[0] for c in cursor.description]
         return [dict(zip(cols, r)) for r in cursor.fetchall()]
 
-    def get(self, id_: int) -> Optional[dict]:
+    def get(self, id_: int) -> dict | None:
         cursor = self._execute(
             f"select * from `{self.name}` where `id` = ?",
             [id_]
@@ -187,9 +197,8 @@ class PendingSMSDB(BaseDB):
         return dict(zip(cols, row))
 
     def insert(self, sender: str, recipient: str, content: str,
-               status: str | Enum) -> int:
-        if isinstance(status, Enum):
-            status = status.name
+               status: str | Enum) -> int | None:
+        status = _enum_name(status)
         return self._execute(
             f"insert into `{self.name}` "
             f"(`created_at`, `updated_at`, "
@@ -199,11 +208,9 @@ class PendingSMSDB(BaseDB):
         ).lastrowid
 
     def process(self, id_: int, from_status: str | Enum, to_status: str | Enum,
-                sent_sms_id: int = None, extra: dict = None) -> Optional[dict]:
-        if isinstance(from_status, Enum):
-            from_status = from_status.name
-        if isinstance(to_status, Enum):
-            to_status = to_status.name
+                sent_sms_id: int = None, extra: dict = None) -> dict | None:
+        from_status = _enum_name(from_status)
+        to_status = _enum_name(to_status)
         values = {'status': to_status, 'updated_at': int(time())}
         if sent_sms_id is not None:
             values['sent_sms_id'] = sent_sms_id
@@ -247,7 +254,7 @@ class SmsDB(BaseDB):
     indices = {'numbers_idx': ('own_number', 'other_number', 'id ASC'),
                'type_numbers_idx': ('type', 'own_number', 'other_number',
                                     'id ASC'),
-               'type_status_idx': {'type', 'status', 'id ASC'}}
+               'type_status_idx': ('type', 'status', 'id ASC')}
 
     def list(self,
              type_: SMSType | str = None,
@@ -255,10 +262,10 @@ class SmsDB(BaseDB):
              other_number: str = '',
              status: str | Enum = None,
              limit: int = 10
-             ) -> List[dict]:
+             ) -> list[dict]:
         where = {}
         if type_ is not None:
-            where['type'] = (type_.name if isinstance(type_, Enum) else type_)
+            where['type'] = _enum_name(type_)
         elif status is not None:
             raise ValueError(
                 f'`status` is only available when `type_` is given')
@@ -270,8 +277,7 @@ class SmsDB(BaseDB):
         if other_number:
             where['other_number'] = other_number
         if status is not None:
-            where['status'] = (status.name if isinstance(status, Enum)
-                               else status)
+            where['status'] = _enum_name(status)
         where_clause = (f"where {' and '.join(f'`{w}` = ?' for w in where)}"
                         if where else '')
         cursor = self._execute(
@@ -300,7 +306,7 @@ class SmsDB(BaseDB):
         cols = [c[0] for c in cursor.description]
         return [dict(zip(cols, r)) for r in cursor.fetchall()]
 
-    def get(self, id_: int) -> Optional[dict]:
+    def get(self, id_: int) -> dict | None:
         cursor = self._execute(
             f"select * from `{self.name}` where `id` = ?",
             [id_]
@@ -312,11 +318,9 @@ class SmsDB(BaseDB):
 
     def insert(self, type_: SMSType | str,
                own_number: str, other_number, content: str,
-               status: str | Enum, time_: int = None) -> int:
-        if isinstance(type_, Enum):
-            type_ = type_.name
-        if isinstance(status, Enum):
-            status = status.name
+               status: str | Enum, time_: int = None) -> int | None:
+        type_ = _enum_name(type_)
+        status = _enum_name(status)
         return self._execute(
             f"insert into `{self.name}` "
             f"(`created_at`, `updated_at`, "
@@ -328,12 +332,11 @@ class SmsDB(BaseDB):
         ).lastrowid
 
     def update_status(self, id_: int, status: str | Enum, *,
-                      delivery_report: dict = _EMPTY,
-                      extra: dict = _EMPTY
+                      delivery_report: dict | None | _Empty = _EMPTY,
+                      extra: dict | None | _Empty = _EMPTY
                       ) -> bool:
-        if isinstance(status, Enum):
-            status = status.name
-        values = {'status': status}
+        status = _enum_name(status)
+        values: dict[str, Any] = {'status': status}
         if delivery_report is not _EMPTY:
             if delivery_report is not None:
                 delivery_report = compact_json_dumps(delivery_report)
@@ -353,19 +356,16 @@ class SmsDB(BaseDB):
     def batch_update_status(self, type_: SMSType | str,
                             status: str | Enum,
                             from_status: str | Enum = None) -> int:
-        where = {'type': type_.name if isinstance(type_, Enum) else type_}
+        where = {'type': _enum_name(type_)}
         if from_status is not None:
-            where['status'] = (from_status.name
-                               if isinstance(from_status, Enum)
-                               else from_status)
+            where['status'] = _enum_name(from_status)
         where_clause = (f"where {' and '.join(f'`{w}` = ?' for w in where)}"
                         if where else '')
         return self._execute(
             f"update `{self.name}` "
             f"set `status` = ?, `updated_at` = ? "
             f"{where_clause}",
-            [(status.name if isinstance(status, Enum) else status,
-              int(time()), *where.values())]
+            [_enum_name(status), int(time()), *where.values()]
         ).rowcount
 
     def delete(self, id_: int) -> bool:

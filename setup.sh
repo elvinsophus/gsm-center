@@ -12,11 +12,11 @@ function error() {
 
 info "Checking Python version..."
 if [[ ! -x "$(command -v python3)" ]]; then
-    error "  Python3 does exist, please install it manually"
+    error "  Python3 does not exist, please install it manually"
 fi
 
-PY_VERSION=3.9
-if [[ $( (python3 --version | awk -F' ' '{print $2}' | awk -F'.' '{print $2}')) -lt 9 ]]; then
+PY_VERSION=3.10
+if [[ $( (python3 --version | awk -F' ' '{print $2}' | awk -F'.' '{print $2}')) -lt 10 ]]; then
     error "  Version of Python3 is too low (${PY_VERSION} required)"
 fi
 
