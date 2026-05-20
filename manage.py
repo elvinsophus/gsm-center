@@ -199,6 +199,22 @@ def hangup_call(call_id):
 
 
 @cli.command()
+def list_audio_devices():
+    from app.main import GSMCenter
+    for name, device in GSMCenter.AudioDeviceOptions.list().items():
+        print('\n'.join([
+            name,
+            f'  input: {device.input}',
+            f'  output: {device.output}',
+            f'  sample_rate: {device.sample_rate}',
+            f'  channels: {device.channels}',
+            f'  format: {device.format}',
+            f'  frame_ms: {device.frame_ms}',
+            ''
+        ]))
+
+
+@cli.command()
 def test():
     """For making sure the project is operable."""
     print('Hello world!')

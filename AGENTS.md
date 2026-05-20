@@ -74,6 +74,7 @@ python manage.py list_phone_calls [OWN] -n 10      # View phone calls
 python manage.py call CALLER RECIPIENT             # Queue outgoing phone call
 python manage.py answer_call CALL_ID               # Queue answer request
 python manage.py hangup_call CALL_ID               # Queue hangup request
+python manage.py list_audio_devices                # List configured audio devices
 python manage.py test                              # Healthcheck (prints "Hello world!")
 ```
 
@@ -82,6 +83,8 @@ python manage.py test                              # Healthcheck (prints "Hello 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/own-numbers` | List active phone numbers (updated in last 60s) |
+| `GET` | `/audio/devices` | List configured audio devices |
+| `GET` | `/audio/devices/<name>` | Get configured audio device detail |
 | `POST` | `/sms` | Queue SMS: `{"sender": "+...", "recipient": "+...", "content": "..."}` |
 | `GET` | `/calls` | List phone calls, optionally filtered by `own_number`, `other_number`, `type`, `status`, `limit` |
 | `GET` | `/calls/<id>` | Get phone call detail |

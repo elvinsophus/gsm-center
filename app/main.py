@@ -311,6 +311,7 @@ class DeviceOptions(NamedTuple):
     own_number: str = None
     sms_enabled: bool = False
     call_enabled: bool = False
+    audio_device: str = ''
     on_sms_received: str = ''
     on_sms_received_env: dict = None
     on_call_received: str = ''
@@ -338,6 +339,9 @@ class DeviceOptions(NamedTuple):
         if (call_enabled := _first_defined(
                 call_conf.get('enabled'), d.get('call_enabled'))) is not None:
             args['call_enabled'] = bool(call_enabled)
+        if audio_device := _first_truthy(
+                call_conf.get('audio_device'), d.get('audio_device')):
+            args['audio_device'] = str(audio_device)
         if on_sms_received := _first_truthy(
                 sms_received.get('command'), d.get('on_sms_received')):
             args['on_sms_received'] = str(on_sms_received)
@@ -351,6 +355,45 @@ class DeviceOptions(NamedTuple):
                 call_received.get('env'), d.get('on_call_received_env')):
             args['on_call_received_env'] = on_call_received_env
         return cls(**args)
+
+
+class AudioDeviceOptions(NamedTuple):
+    name: str
+    input: str = ''
+    output: str = ''
+    sample_rate: int = 8000
+    channels: int = 1
+    format: str = 's16le'
+    frame_ms: int = 20
+
+    @classmethod
+    def from_dict(cls, name: str, d: dict) -> 'AudioDeviceOptions':
+        args = {'name': str(name)}
+        if input_ := d.get('input'):
+            args['input'] = str(input_)
+        if output := d.get('output'):
+            args['output'] = str(output)
+        if (sample_rate := d.get('sample_rate')) is not None:
+            args['sample_rate'] = int(sample_rate)
+        if (channels := d.get('channels')) is not None:
+            args['channels'] = int(channels)
+        if format_ := d.get('format'):
+            args['format'] = str(format_)
+        if (frame_ms := d.get('frame_ms')) is not None:
+            args['frame_ms'] = int(frame_ms)
+        return cls(**args)
+
+    @classmethod
+    def list(cls) -> dict[str, 'AudioDeviceOptions']:
+        audio_confs = config.get('AUDIO_DEVICES') or {}
+        return {
+            name: cls.from_dict(name, _dict_or_empty(conf))
+            for name, conf in audio_confs.items()
+        }
+
+    @classmethod
+    def get(cls, name: str) -> 'AudioDeviceOptions | None':
+        return cls.list().get(name)
 
 
 def _dict_or_empty(value: dict | None) -> dict:
@@ -384,6 +427,7 @@ class GSMCenter:
     StoredPhoneCall = StoredPhoneCall
     PhoneCallStatus = PhoneCallStatus
     DeviceOptions = DeviceOptions
+    AudioDeviceOptions = AudioDeviceOptions
 
     def __init__(self, port: str = '', **kwargs):
         dev_confs = config.get('DEVICES') or {}

@@ -33,6 +33,7 @@ class TestDeviceOptions:
             },
             'calls': {
                 'enabled': True,
+                'audio_device': 'gsm_usb',
                 'hooks': {
                     'received': {
                         'command': './call.sh',
@@ -44,6 +45,7 @@ class TestDeviceOptions:
 
         assert options.sms_enabled is True
         assert options.call_enabled is True
+        assert options.audio_device == 'gsm_usb'
         assert options.on_sms_received == './sms.sh'
         assert options.on_sms_received_env == {'A': '1'}
         assert options.on_call_received == './call.sh'
@@ -71,3 +73,35 @@ class TestDeviceOptions:
         assert options.call_enabled is True
         assert options.on_sms_received == './grouped-sms.sh'
         assert options.on_call_received == './grouped-call.sh'
+
+
+class TestAudioDeviceOptions:
+
+    def test_from_dict_uses_defaults(self):
+        options = GSMCenter.AudioDeviceOptions.from_dict('gsm_usb', {})
+
+        assert options.name == 'gsm_usb'
+        assert options.input == ''
+        assert options.output == ''
+        assert options.sample_rate == 8000
+        assert options.channels == 1
+        assert options.format == 's16le'
+        assert options.frame_ms == 20
+
+    def test_from_dict_parses_configured_values(self):
+        options = GSMCenter.AudioDeviceOptions.from_dict('gsm_usb', {
+            'input': 'plughw:3,0',
+            'output': 'plughw:3,0',
+            'sample_rate': '16000',
+            'channels': '2',
+            'format': 's24le',
+            'frame_ms': '40',
+        })
+
+        assert options.name == 'gsm_usb'
+        assert options.input == 'plughw:3,0'
+        assert options.output == 'plughw:3,0'
+        assert options.sample_rate == 16000
+        assert options.channels == 2
+        assert options.format == 's24le'
+        assert options.frame_ms == 40

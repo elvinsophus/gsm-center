@@ -216,6 +216,11 @@ Add audio device inspection:
 ```text
 GET /audio/devices
 GET /audio/devices/<name>
+```
+
+Add audio smoke tests later:
+
+```text
 POST /audio/devices/<name>/test-record
 POST /audio/devices/<name>/test-play
 ```

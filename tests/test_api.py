@@ -4,6 +4,50 @@ import pytest
 from unittest.mock import patch
 
 
+class TestGetAudioDevices:
+
+    def test_list_audio_devices_returns_configured_devices(self, client):
+        from app.main import GSMCenter
+        devices = {
+            'gsm_usb': GSMCenter.AudioDeviceOptions(
+                'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20),
+        }
+
+        with patch('app.api.AudioDeviceOptions.list', return_value=devices):
+            resp = client.get('/audio/devices')
+
+        assert resp.status_code == 200
+        assert resp.json == {
+            'gsm_usb': {
+                'name': 'gsm_usb',
+                'input': 'plughw:3,0',
+                'output': 'plughw:3,0',
+                'sample_rate': 8000,
+                'channels': 1,
+                'format': 's16le',
+                'frame_ms': 20,
+            },
+        }
+
+    def test_get_audio_device_returns_configured_device(self, client):
+        from app.main import GSMCenter
+        device = GSMCenter.AudioDeviceOptions(
+            'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20)
+
+        with patch('app.api.AudioDeviceOptions.get', return_value=device):
+            resp = client.get('/audio/devices/gsm_usb')
+
+        assert resp.status_code == 200
+        assert resp.json['name'] == 'gsm_usb'
+        assert resp.json['input'] == 'plughw:3,0'
+
+    def test_get_audio_device_missing_returns_404(self, client):
+        with patch('app.api.AudioDeviceOptions.get', return_value=None):
+            resp = client.get('/audio/devices/missing')
+
+        assert resp.status_code == 404
+
+
 VALID_SMS_BODY = {
     'sender': '+8613500000001',
     'recipient': '+8613500000002',

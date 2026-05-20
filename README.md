@@ -21,6 +21,8 @@ executes them.
 
 ```text
 GET  /own-numbers
+GET  /audio/devices
+GET  /audio/devices/<name>
 POST /sms
 GET  /calls
 GET  /calls/<id>
@@ -42,6 +44,7 @@ python manage.py list_phone_calls [OWN_NUMBER] -n 10
 python manage.py call CALLER RECIPIENT
 python manage.py answer_call CALL_ID
 python manage.py hangup_call CALL_ID
+python manage.py list_audio_devices
 ```
 
 ## Device Configuration Shape

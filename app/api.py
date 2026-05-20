@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 
 from flask import Flask, Blueprint, request, jsonify
-from .main import GSMStore, PhoneCallStatus, PhoneCallType, StoredPhoneCall
+from .main import (AudioDeviceOptions, GSMStore, PhoneCallStatus,
+                   PhoneCallType, StoredPhoneCall)
 
 
 bp = Blueprint('index', __name__)
@@ -10,6 +11,21 @@ bp = Blueprint('index', __name__)
 @bp.route('/own-numbers', methods=['GET'])
 def list_senders():
     return jsonify(GSMStore.list_active_own_numbers())
+
+
+@bp.route('/audio/devices', methods=['GET'])
+def list_audio_devices():
+    return jsonify({
+        name: _audio_device_to_json(device)
+        for name, device in AudioDeviceOptions.list().items()
+    })
+
+
+@bp.route('/audio/devices/<name>', methods=['GET'])
+def get_audio_device(name):
+    if not (device := AudioDeviceOptions.get(name)):
+        return f'audio device {name!r} not found', 404
+    return jsonify(_audio_device_to_json(device))
 
 
 @bp.route('/sms', methods=['POST'])
@@ -117,6 +133,18 @@ def _enum_arg(enum_cls, value: str | None):
 
 def _datetime_to_timestamp(value):
     return int(value.timestamp()) if value else None
+
+
+def _audio_device_to_json(device: AudioDeviceOptions) -> dict:
+    return dict(
+        name=device.name,
+        input=device.input,
+        output=device.output,
+        sample_rate=device.sample_rate,
+        channels=device.channels,
+        format=device.format,
+        frame_ms=device.frame_ms,
+    )
 
 
 def _phone_call_to_json(call: StoredPhoneCall) -> dict:
