@@ -22,6 +22,8 @@ executes them.
 ```text
 GET  /own-numbers
 POST /sms
+GET  /calls
+GET  /calls/<id>
 POST /calls
 POST /calls/<id>/answer
 POST /calls/<id>/hangup

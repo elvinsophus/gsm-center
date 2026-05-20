@@ -83,6 +83,8 @@ python manage.py test                              # Healthcheck (prints "Hello 
 |--------|----------|-------------|
 | `GET` | `/own-numbers` | List active phone numbers (updated in last 60s) |
 | `POST` | `/sms` | Queue SMS: `{"sender": "+...", "recipient": "+...", "content": "..."}` |
+| `GET` | `/calls` | List phone calls, optionally filtered by `own_number`, `other_number`, `type`, `status`, `limit` |
+| `GET` | `/calls/<id>` | Get phone call detail |
 | `POST` | `/calls` | Queue outgoing call: `{"caller": "+...", "recipient": "+..."}` |
 | `POST` | `/calls/<id>/answer` | Queue answer request for a ringing incoming call |
 | `POST` | `/calls/<id>/hangup` | Queue hangup request for a non-terminal call |

@@ -199,21 +199,17 @@ FAILED
 
 ## HTTP API Roadmap
 
-Current call control:
+Current call control and inspection:
 
 ```text
+GET /calls
+GET /calls/<id>
 POST /calls
 POST /calls/<id>/answer
 POST /calls/<id>/hangup
 ```
 
-Add call inspection:
-
-```text
-GET /calls
-GET /calls/<id>
-GET /calls/<id>/recordings
-```
+Add call recording inspection later with `GET /calls/<id>/recordings`.
 
 Add audio device inspection:
 

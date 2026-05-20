@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from flask import Flask, Blueprint, request, jsonify
-from .main import GSMStore
+from .main import GSMStore, PhoneCallStatus, PhoneCallType, StoredPhoneCall
 
 
 bp = Blueprint('index', __name__)
@@ -59,6 +59,33 @@ def add_call():
     return jsonify(dict(id=mid))
 
 
+@bp.route('/calls', methods=['GET'])
+def list_calls():
+    try:
+        own_number = request.args.get('own_number', '')
+        other_number = request.args.get('other_number', '')
+        limit = int(request.args.get('limit', 10))
+        type_ = _enum_arg(PhoneCallType, request.args.get('type'))
+        status = _enum_arg(PhoneCallStatus, request.args.get('status'))
+        calls = GSMStore(own_number).list_phone_calls(
+            type_, other_number=other_number, status=status, limit=limit)
+    except ValueError as e:
+        return str(e), 400
+    except Exception as e:
+        return str(e), 500
+    return jsonify([_phone_call_to_json(c) for c in calls])
+
+
+@bp.route('/calls/<int:call_id>', methods=['GET'])
+def get_call(call_id):
+    try:
+        if not (call := GSMStore('').get_phone_call(call_id)):
+            return f'call #{call_id} not found', 404
+    except Exception as e:
+        return str(e), 500
+    return jsonify(_phone_call_to_json(call))
+
+
 @bp.route('/calls/<int:call_id>/answer', methods=['POST'])
 def answer_call(call_id):
     try:
@@ -77,6 +104,35 @@ def hangup_call(call_id):
     except Exception as e:
         return str(e), 500
     return jsonify(dict(id=call_id, status='HANGUP_REQUESTED'))
+
+
+def _enum_arg(enum_cls, value: str | None):
+    if not value:
+        return None
+    try:
+        return getattr(enum_cls, value.upper())
+    except AttributeError:
+        raise ValueError(f'invalid {enum_cls.__name__}: {value!r}')
+
+
+def _datetime_to_timestamp(value):
+    return int(value.timestamp()) if value else None
+
+
+def _phone_call_to_json(call: StoredPhoneCall) -> dict:
+    return dict(
+        id=call.id,
+        type=call.type.name,
+        time=_datetime_to_timestamp(call.time),
+        own_number=call.own_number,
+        other_number=call.other_number,
+        caller=call.caller,
+        recipient=call.recipient,
+        status=call.status.name,
+        started_at=_datetime_to_timestamp(call.started_at),
+        ended_at=_datetime_to_timestamp(call.ended_at),
+        extra=call.extra,
+    )
 
 
 def init_app(app: Flask):
