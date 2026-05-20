@@ -15,8 +15,7 @@ from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             PinRequiredError, IncorrectPinError)
 from .config import config
 from .db import SIMCardDB, PendingSMSDB, SmsDB, PhoneCallDB
-from .utils import (timestamp_to_datetime, safe, remove_prefix,
-                    run_system_command)
+from .utils import timestamp_to_datetime, safe, run_system_command
 import phonenumbers
 
 
@@ -125,7 +124,7 @@ class GSMStore:
         return self.pending_sms_from_db(row)
 
     def list_pending_smss(self, *,
-                          status: PendingSMSStatus = None,
+                          status: PendingSMSStatus | None = None,
                           limit: int = 10) -> list[PendingSMS]:
         return list(map(
             self.pending_sms_from_db,
@@ -146,7 +145,7 @@ class GSMStore:
             return None
         return self.sms_from_db(row)
 
-    def list_smss(self, type_: SMSType = None, *,
+    def list_smss(self, type_: SMSType | None = None, *,
                   other_number: str | None = None,
                   status: SentSMSStatus | None = None,
                   limit: int = 10) -> list[StoredSMS]:
@@ -182,7 +181,7 @@ class GSMStore:
 
     def list_sent_smss(self, *,
                        recipient: str = '',
-                       status: SentSMSStatus = None,
+                       status: SentSMSStatus | None = None,
                        limit: int = 10
                        ) -> list[StoredSMS]:
         return self.list_smss(
@@ -196,8 +195,8 @@ class GSMStore:
         return sms
 
     def list_received_smss(self, *,
-                           sender: str = None,
-                           status: SentSMSStatus = None,
+                           sender: str | None = None,
+                           status: SentSMSStatus | None = None,
                            limit: int = 10
                            ) -> list[StoredSMS]:
         return self.list_smss(
@@ -225,9 +224,9 @@ class GSMStore:
         return self.phone_call_from_db(row)
 
     def list_phone_calls(self,
-                         type_: PhoneCallType = None, *,
+                         type_: PhoneCallType | None = None, *,
                          other_number: str = '',
-                         status: PhoneCallStatus = None,
+                         status: PhoneCallStatus | None = None,
                          limit: int = 10) -> list[StoredPhoneCall]:
         if other_number:
             other_number = GSMCenter.normalise_number(other_number)
@@ -254,8 +253,8 @@ class GSMStore:
 
     @classmethod
     def list_active_own_numbers(cls, threshold: int = 60, *,
-                                call_enabled: bool = None,
-                                sms_enabled: bool = None) -> list[str]:
+                                call_enabled: bool | None = None,
+                                sms_enabled: bool | None = None) -> list[str]:
         return cls.sim_card_db.list_phone_numbers(
             int(time()) - threshold,
             call_enabled=call_enabled, sms_enabled=sms_enabled)
@@ -521,7 +520,7 @@ class GSMCenter:
         region: str
         if not (country_code := phonenumbers.country_code_for_region(region)):
             return number
-        return remove_prefix(number, f'+{country_code}')
+        return number.removeprefix(f'+{country_code}')
 
     def _update_sim_card_status(self):
         if not self._connect():

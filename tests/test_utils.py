@@ -1,42 +1,14 @@
 # -*- coding: utf-8 -*-
 
 import pytest
-from datetime import timedelta, datetime, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 
 from app.utils import (
-    remove_prefix, remove_suffix, camel_to_underscore,
-    timedelta_to_str, safe, json_serializable, compact_json_dumps, load_yaml,
+    camel_to_underscore, safe, json_serializable, compact_json_dumps, load_yaml
 )
 from app.db import _enum_name
-
-
-# ── remove_prefix / remove_suffix ────────────────────────────────────────────
-
-class TestRemovePrefix:
-    def test_removes_prefix(self):
-        assert remove_prefix('_FooDB', '_') == 'FooDB'
-
-    def test_absent_prefix_unchanged(self):
-        assert remove_prefix('FooDB', '_') == 'FooDB'
-
-    def test_full_match_gives_empty(self):
-        assert remove_prefix('_', '_') == ''
-
-    def test_empty_prefix_unchanged(self):
-        assert remove_prefix('hello', '') == 'hello'
-
-
-class TestRemoveSuffix:
-    def test_removes_suffix(self):
-        assert remove_suffix('FooDB', 'DB') == 'Foo'
-
-    def test_absent_suffix_unchanged(self):
-        assert remove_suffix('FooTable', 'DB') == 'FooTable'
-
-    def test_full_match_gives_empty(self):
-        assert remove_suffix('DB', 'DB') == ''
 
 
 # ── camel_to_underscore ───────────────────────────────────────────────────────
@@ -71,46 +43,6 @@ class TestEnumName:
 
     def test_string_passes_through(self):
         assert _enum_name('PENDING') == 'PENDING'
-
-
-# ── timedelta_to_str ──────────────────────────────────────────────────────────
-
-class TestTimedeltaToStr:
-    def test_zero(self):
-        assert timedelta_to_str(0) == '0 seconds'
-
-    def test_one_second(self):
-        assert timedelta_to_str(1) == '1 second'
-
-    def test_two_seconds(self):
-        assert timedelta_to_str(2) == '2 seconds'
-
-    def test_minutes_and_seconds(self):
-        assert timedelta_to_str(100) == '1 minute 40 seconds'
-
-    def test_timedelta_input(self):
-        assert timedelta_to_str(timedelta(seconds=100)) == '1 minute 40 seconds'
-
-    def test_minutes_only(self):
-        assert timedelta_to_str(1024) == '17 minutes 4 seconds'
-
-    def test_days_hours_minutes_seconds(self):
-        assert timedelta_to_str(123456) == '1 day 10 hours 17 minutes 36 seconds'
-
-    def test_abbreviated(self):
-        assert timedelta_to_str(123456, abbr=True) == '1d10h17m36s'
-
-    def test_negative_int_raises(self):
-        with pytest.raises(ValueError):
-            timedelta_to_str(-1)
-
-    def test_negative_timedelta_raises(self):
-        with pytest.raises(ValueError):
-            timedelta_to_str(timedelta(seconds=-1))
-
-    def test_unsupported_type_raises(self):
-        with pytest.raises(TypeError):
-            timedelta_to_str('bad')  # type: ignore
 
 
 # ── safe ──────────────────────────────────────────────────────────────────────

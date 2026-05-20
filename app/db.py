@@ -8,8 +8,8 @@ from threading import local
 from time import time
 from typing import Any
 from .config import config
-from .utils import (camel_to_underscore, compact_json_dumps,
-                    remove_prefix, remove_suffix)
+from .utils import camel_to_underscore, compact_json_dumps
+
 import sqlite3
 
 
@@ -29,13 +29,13 @@ class _BaseDBMeta(type):
 
     _name_to_class_ = {}
 
-    def __new__(mcs, name, bases, dct):
+    def __new__(mcs, name: str, bases, dct):
         new_cls = partial(super().__new__, mcs, name, bases, dct)
         if not any(isinstance(b, mcs) for b in bases):
             return new_cls()
         if not dct.get('name'):
             dct['name'] = camel_to_underscore(
-                remove_suffix(remove_prefix(name, '_'), 'DB'))
+                name.removeprefix('_').removesuffix('DB'))
         if not dct.get('schema'):
             raise AttributeError(f'{name}.schema is not defined')
         name2cls = mcs._name_to_class_
@@ -103,9 +103,9 @@ class SIMCardDB(BaseDB):
     '''
 
     def list(self,
-             since: datetime | int = None, *,
-             call_enabled: bool = None,
-             sms_enabled: bool = None) -> list[dict]:
+             since: datetime | int | None = None, *,
+             call_enabled: bool | None = None,
+             sms_enabled: bool | None = None) -> list[dict]:
         where = {}
         if call_enabled is not None:
             where["`call_enabled` = ?"] = int(call_enabled)
@@ -123,9 +123,10 @@ class SIMCardDB(BaseDB):
         cols = [c[0] for c in cursor.description]
         return [dict(zip(cols, r)) for r in cursor.fetchall()]
 
-    def list_phone_numbers(self, since: datetime | int = None, *,
-                           call_enabled: bool = None,
-                           sms_enabled: bool = None) -> _builtin_list[str]:
+    def list_phone_numbers(self, since: datetime | int | None = None, *,
+                           call_enabled: bool | None = None,
+                           sms_enabled: bool | None = None
+                           ) -> _builtin_list[str]:
         return [
             r['phone_number']
             for r in self.list(
@@ -172,7 +173,7 @@ class PendingSMSDB(BaseDB):
     indices = {'sender_status_idx': ('sender', 'status')}
 
     def list(self, sender: str, *,
-             status: str | Enum = None, limit: int = 10) -> list[dict]:
+             status: str | Enum | None = None, limit: int = 10) -> list[dict]:
         where = {'sender': sender}
         if status is not None:
             where['status'] = _enum_name(status)
@@ -208,7 +209,8 @@ class PendingSMSDB(BaseDB):
         ).lastrowid
 
     def process(self, id_: int, from_status: str | Enum, to_status: str | Enum,
-                sent_sms_id: int = None, extra: dict = None) -> dict | None:
+                sent_sms_id: int | None = None, extra: dict | None = None
+                ) -> dict | None:
         from_status = _enum_name(from_status)
         to_status = _enum_name(to_status)
         values = {'status': to_status, 'updated_at': int(time())}
@@ -257,10 +259,10 @@ class SmsDB(BaseDB):
                'type_status_idx': ('type', 'status', 'id ASC')}
 
     def list(self,
-             type_: SMSType | str = None,
+             type_: SMSType | str | None = None,
              own_number: str = '', *,
              other_number: str = '',
-             status: str | Enum = None,
+             status: str | Enum | None = None,
              limit: int = 10
              ) -> list[dict]:
         where = {}
@@ -318,7 +320,7 @@ class SmsDB(BaseDB):
 
     def insert(self, type_: SMSType | str,
                own_number: str, other_number, content: str,
-               status: str | Enum, time_: int = None) -> int | None:
+               status: str | Enum, time_: int | None = None) -> int | None:
         type_ = _enum_name(type_)
         status = _enum_name(status)
         return self._execute(
@@ -355,7 +357,7 @@ class SmsDB(BaseDB):
 
     def batch_update_status(self, type_: SMSType | str,
                             status: str | Enum,
-                            from_status: str | Enum = None) -> int:
+                            from_status: str | Enum | None = None) -> int:
         where = {'type': _enum_name(type_)}
         if from_status is not None:
             where['status'] = _enum_name(from_status)
@@ -399,10 +401,10 @@ class PhoneCallDB(BaseDB):
                'call_status_idx': ('own_number', 'status', 'id ASC')}
 
     def list(self,
-             type_: PhoneCallType | str = None,
+             type_: PhoneCallType | str | None = None,
              own_number: str = '', *,
              other_number: str = '',
-             status: str | Enum = None,
+             status: str | Enum | None = None,
              limit: int = 10
              ) -> list[dict]:
         where = {}
@@ -451,7 +453,7 @@ class PhoneCallDB(BaseDB):
         ).lastrowid
 
     def update_status(self, id_: int, status: str | Enum, *,
-                      from_status: str | Enum = None,
+                      from_status: str | Enum | None = None,
                       started_at: int | None | _Empty = _EMPTY,
                       ended_at: int | None | _Empty = _EMPTY,
                       extra: dict | None | _Empty = _EMPTY
@@ -466,7 +468,7 @@ class PhoneCallDB(BaseDB):
             if extra is not None:
                 extra = compact_json_dumps(extra)
             values['extra'] = extra
-        where = {'id': id_}
+        where: dict = {'id': id_}
         if from_status is not None:
             where['status'] = _enum_name(from_status)
         return bool(self._execute(

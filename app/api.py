@@ -48,6 +48,8 @@ def add_call():
     if not (recipient := args.get('recipient')):
         return 'parameter `recipient` not provided', 400
 
+    caller: str
+    recipient: str
     try:
         mid = GSMStore.add_phone_call(caller, recipient)
     except ValueError as e:
