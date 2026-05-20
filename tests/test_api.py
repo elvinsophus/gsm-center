@@ -10,6 +10,11 @@ VALID_SMS_BODY = {
     'content': 'Hello!',
 }
 
+VALID_CALL_BODY = {
+    'caller': '+8613500000001',
+    'recipient': '+8613500000002',
+}
+
 
 # ── GET /own-numbers ──────────────────────────────────────────────────────────
 
@@ -83,3 +88,71 @@ class TestPostSms:
                    side_effect=RuntimeError('modem unavailable')):
             resp = client.post('/sms', json=VALID_SMS_BODY)
         assert resp.status_code == 500
+
+
+class TestPostCalls:
+
+    def test_valid_request_returns_id(self, client):
+        with patch('app.main.GSMStore.add_phone_call', return_value=9):
+            resp = client.post('/calls', json=VALID_CALL_BODY)
+        assert resp.status_code == 200
+        assert resp.json == {'id': 9}
+
+    def test_no_body_returns_4xx(self, client):
+        resp = client.post('/calls')
+        assert resp.status_code in (400, 415)
+
+    def test_missing_caller_returns_400(self, client):
+        body = {k: v for k, v in VALID_CALL_BODY.items() if k != 'caller'}
+        resp = client.post('/calls', json=body)
+        assert resp.status_code == 400
+        assert b'caller' in resp.data
+
+    def test_missing_recipient_returns_400(self, client):
+        body = {k: v for k, v in VALID_CALL_BODY.items()
+                if k != 'recipient'}
+        resp = client.post('/calls', json=body)
+        assert resp.status_code == 400
+        assert b'recipient' in resp.data
+
+    def test_inactive_caller_returns_400(self, client):
+        with patch('app.main.GSMStore.add_phone_call',
+                   side_effect=ValueError('caller not active')):
+            resp = client.post('/calls', json=VALID_CALL_BODY)
+        assert resp.status_code == 400
+        assert b'caller not active' in resp.data
+
+    def test_internal_error_returns_500(self, client):
+        with patch('app.main.GSMStore.add_phone_call',
+                   side_effect=RuntimeError('modem unavailable')):
+            resp = client.post('/calls', json=VALID_CALL_BODY)
+        assert resp.status_code == 500
+
+
+class TestPostCallActions:
+
+    def test_answer_returns_requested_status(self, client):
+        with patch('app.main.GSMStore.request_phone_call_answer',
+                   return_value=True):
+            resp = client.post('/calls/7/answer')
+        assert resp.status_code == 200
+        assert resp.json == {'id': 7, 'status': 'ANSWER_REQUESTED'}
+
+    def test_answer_missing_call_returns_404(self, client):
+        with patch('app.main.GSMStore.request_phone_call_answer',
+                   return_value=False):
+            resp = client.post('/calls/7/answer')
+        assert resp.status_code == 404
+
+    def test_hangup_returns_requested_status(self, client):
+        with patch('app.main.GSMStore.request_phone_call_hangup',
+                   return_value=True):
+            resp = client.post('/calls/7/hangup')
+        assert resp.status_code == 200
+        assert resp.json == {'id': 7, 'status': 'HANGUP_REQUESTED'}
+
+    def test_hangup_missing_call_returns_404(self, client):
+        with patch('app.main.GSMStore.request_phone_call_hangup',
+                   return_value=False):
+            resp = client.post('/calls/7/hangup')
+        assert resp.status_code == 404

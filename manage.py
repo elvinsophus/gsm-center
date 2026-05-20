@@ -39,7 +39,7 @@ def shell():
         'def print_and_exec(cmd): print(cmd); exec(cmd, globals())',
         'print_and_exec("from app.main import GSMCenter")',
         'print_and_exec("from app.config import config")',
-        'print_and_exec("from app.db import SIMCardDB, PendingSMSDB, SmsDB")',
+        'print_and_exec("from app.db import SIMCardDB, PendingSMSDB, SmsDB, PhoneCallDB")',
         'print_and_exec("from app.utils import *")',
         'print_and_exec("from functools import *")',
         'print_and_exec("from itertools import *")',
@@ -152,6 +152,50 @@ def list_sms_dialog(own_number, other_number, count):
             f'{sms.content}',
             ''
         ]))
+
+
+@cli.command()
+@click.argument('own_number', required=False, default='')
+@click.option('-n', '--count', type=int, default=10)
+def list_phone_calls(own_number, count):
+    from app.main import GSMCenter
+    types = GSMCenter.PhoneCallType
+    for call in GSMCenter.GSMStore(own_number).list_phone_calls(limit=count):
+        direction = '->' if call.type is types.OUTGOING else '<-'
+        print('\n'.join([
+            f'#{call.id} | {call.time} | ({call.status.name})',
+            f'  {call.own_number} {direction} {call.other_number}',
+            ''
+        ]))
+
+
+@cli.command()
+@click.argument('caller')
+@click.argument('recipient')
+def call(caller, recipient):
+    from app.main import GSMCenter
+    mid = GSMCenter.GSMStore.add_phone_call(caller, recipient)
+    print(f'queued phone call #{mid}')
+
+
+@cli.command()
+@click.argument('call_id', type=int)
+def answer_call(call_id):
+    from app.main import GSMCenter
+    if GSMCenter.GSMStore.request_phone_call_answer(call_id):
+        print(f'queued answer request for phone call #{call_id}')
+    else:
+        raise click.ClickException(f'phone call #{call_id} is not ringing')
+
+
+@cli.command()
+@click.argument('call_id', type=int)
+def hangup_call(call_id):
+    from app.main import GSMCenter
+    if GSMCenter.GSMStore.request_phone_call_hangup(call_id):
+        print(f'queued hangup request for phone call #{call_id}')
+    else:
+        raise click.ClickException(f'phone call #{call_id} not found')
 
 
 @cli.command()

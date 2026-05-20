@@ -1,13 +1,57 @@
 DEFAULT_MOBILE_REGION:  #
 
+AUDIO_DEVICES:
+  #gsm_usb:
+    #input:  # ALSA capture device, e.g. plughw:3,0
+    #output:  # ALSA playback device, e.g. plughw:3,0
+    #sample_rate:  # audio sample rate, e.g. 8000
+    #channels:  # channel count, e.g. 1
+    #format:  # sample format, e.g. s16le
+    #frame_ms:  # stream frame size in milliseconds, e.g. 20
+
 DEVICES:
   #/dev/ttyUSB<?>:  # port, e.g. /dev/ttyUSB1
     #baudrate:  # baud rate, e.g. 115200
     #pin:  # PIN of SIM card
     #own_number:   # own phone number, e.g. '+8613512345678'
-    #sms_enabled:  # whether SMSs are enabled, e.g. yes
-    #call_enabled:  # whether calls are enabled, e.g. yes
-    #on_sms_received:  # command to execute when sms received (variables: SMS_SENDER, SMS_RECIPIENT, SMS_CONTENT, SMS_TIMESTAMP, SMS_TIME_STR)
-    #on_sms_received_env:  # environment variables for `on_sms_received`
+
+    #sms:
+      #enabled:  # whether SMSs are enabled, e.g. yes
+      #on_received:
+        #command:  # command to execute when SMS received (variables: SMS_SENDER, SMS_RECIPIENT, SMS_CONTENT, SMS_TIMESTAMP, SMS_TIME_STR)
+        #env:  # environment variables for SMS received command
+
+    #calls:
+      #enabled:  # whether calls are enabled, e.g. yes
+      #audio_device:  # configured AUDIO_DEVICES key, e.g. gsm_usb
+      #hooks:
+        #received:
+          #command:  # command to execute when call received (variables: CALL_ID, CALL_CALLER, CALL_RECIPIENT, CALL_TIMESTAMP, CALL_TIME_STR)
+          #env:  # environment variables for call received command
+        #answered:
+          #command:  # command to execute when call is answered
+          #env:  # environment variables for call answered command
+        #ended:
+          #command:  # command to execute when call ends
+          #env:  # environment variables for call ended command
+        #failed:
+          #command:  # command to execute when call fails
+          #env:  # environment variables for call failed command
+      #audio:
+        #command:  # managed long-running audio command for an answered call
+        #env:  # environment variables for managed audio command
+      #recording:
+        #enabled:  # whether recording is enabled, e.g. yes
+        #directory:  # where recordings should be stored, e.g. recordings
+        #command:  # optional managed recording command
+        #env:  # environment variables for recording command
+
+    # Legacy flat keys are still supported:
+    #sms_enabled:
+    #call_enabled:
+    #on_sms_received:
+    #on_sms_received_env:
+    #on_call_received:
+    #on_call_received_env:
 
 SQLITE3_FILE:  # SQLite3 DB file

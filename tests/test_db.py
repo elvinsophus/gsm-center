@@ -4,10 +4,12 @@ import json
 import pytest
 from enum import Enum
 
-from app.db import SIMCardDB, PendingSMSDB, SmsDB
+from app.db import SIMCardDB, PendingSMSDB, SmsDB, PhoneCallDB
 
 SENT = SmsDB.SMSType.SENT
 RECEIVED = SmsDB.SMSType.RECEIVED
+OUTGOING = PhoneCallDB.PhoneCallType.OUTGOING
+INCOMING = PhoneCallDB.PhoneCallType.INCOMING
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -25,6 +27,11 @@ def pending_db(fresh_db):
 @pytest.fixture
 def sms_db(fresh_db):
     return SmsDB()
+
+
+@pytest.fixture
+def phone_call_db(fresh_db):
+    return PhoneCallDB()
 
 
 # ── SIMCardDB ─────────────────────────────────────────────────────────────────
@@ -296,3 +303,52 @@ class TestSmsDB:
 
     def test_delete_nonexistent_returns_false(self, sms_db):
         assert sms_db.delete(9999) is False
+
+
+class TestPhoneCallDB:
+
+    def test_insert_and_get(self, phone_call_db):
+        mid = phone_call_db.insert(OUTGOING, '+1111', '+2222', 'CREATED')
+        row = phone_call_db.get(mid)
+        assert row is not None
+        assert row['type'] == 'OUTGOING'
+        assert row['own_number'] == '+1111'
+        assert row['other_number'] == '+2222'
+        assert row['status'] == 'CREATED'
+        assert row['started_at'] is None
+        assert row['ended_at'] is None
+
+    def test_insert_with_enum_status(self, phone_call_db):
+        class S(Enum):
+            RINGING = 0
+        mid = phone_call_db.insert(INCOMING, '+1111', '+2222', S.RINGING)
+        assert phone_call_db.get(mid)['status'] == 'RINGING'
+
+    def test_list_by_own_number_and_status(self, phone_call_db):
+        phone_call_db.insert(OUTGOING, '+1111', '+2222', 'CREATED')
+        phone_call_db.insert(INCOMING, '+1111', '+3333', 'RINGING')
+        rows = phone_call_db.list(own_number='+1111', status='RINGING')
+        assert len(rows) == 1
+        assert rows[0]['other_number'] == '+3333'
+
+    def test_update_status_from_status(self, phone_call_db):
+        mid = phone_call_db.insert(INCOMING, '+1111', '+2222', 'RINGING')
+        assert phone_call_db.update_status(
+            mid, 'ANSWER_REQUESTED', from_status='RINGING') is True
+        assert phone_call_db.get(mid)['status'] == 'ANSWER_REQUESTED'
+
+    def test_update_status_wrong_from_status_returns_false(self, phone_call_db):
+        mid = phone_call_db.insert(INCOMING, '+1111', '+2222', 'RINGING')
+        assert phone_call_db.update_status(
+            mid, 'ANSWER_REQUESTED', from_status='ENDED') is False
+        assert phone_call_db.get(mid)['status'] == 'RINGING'
+
+    def test_update_status_sets_times_and_extra(self, phone_call_db):
+        mid = phone_call_db.insert(OUTGOING, '+1111', '+2222', 'DIALING')
+        phone_call_db.update_status(
+            mid, 'FAILED', started_at=1700000000, ended_at=1700000060,
+            extra={'reason': 'busy'})
+        row = phone_call_db.get(mid)
+        assert row['started_at'] == 1700000000
+        assert row['ended_at'] == 1700000060
+        assert json.loads(row['extra']) == {'reason': 'busy'}

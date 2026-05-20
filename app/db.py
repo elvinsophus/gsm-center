@@ -373,3 +373,111 @@ class SmsDB(BaseDB):
             f"delete from `{self.name}` where `id` = ?",
             [id_]
         ).rowcount)
+
+
+class PhoneCallDB(BaseDB):
+
+    class PhoneCallType(Enum):
+        OUTGOING = 0
+        INCOMING = 1
+
+    schema = '''
+        `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+        `created_at` INTEGER NOT NULL,
+        `updated_at` INTEGER NOT NULL,
+        `type` TEXT NOT NULL,
+        `own_number` TEXT NOT NULL,
+        `other_number` TEXT NOT NULL,
+        `status` TEXT NOT NULL,
+        `started_at` INTEGER,
+        `ended_at` INTEGER,
+        `extra` TEXT
+    '''
+    indices = {'call_numbers_idx': ('own_number', 'other_number', 'id ASC'),
+               'call_type_numbers_idx': ('type', 'own_number',
+                                         'other_number', 'id ASC'),
+               'call_status_idx': ('own_number', 'status', 'id ASC')}
+
+    def list(self,
+             type_: PhoneCallType | str = None,
+             own_number: str = '', *,
+             other_number: str = '',
+             status: str | Enum = None,
+             limit: int = 10
+             ) -> list[dict]:
+        where = {}
+        if type_ is not None:
+            where['type'] = _enum_name(type_)
+        if own_number:
+            where['own_number'] = own_number
+        elif other_number:
+            raise ValueError(
+                f'`other_number` is only available when `own_number` is given')
+        if other_number:
+            where['other_number'] = other_number
+        if status is not None:
+            where['status'] = _enum_name(status)
+        where_clause = (f"where {' and '.join(f'`{w}` = ?' for w in where)}"
+                        if where else '')
+        cursor = self._execute(
+            f"select * from `{self.name}` {where_clause} "
+            f"order by `id` desc limit ?",
+            [*where.values(), limit]
+        )
+        cols = [c[0] for c in cursor.description]
+        return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    def get(self, id_: int) -> dict | None:
+        cursor = self._execute(
+            f"select * from `{self.name}` where `id` = ?",
+            [id_]
+        )
+        if not (row := cursor.fetchone()):
+            return None
+        cols = [c[0] for c in cursor.description]
+        return dict(zip(cols, row))
+
+    def insert(self, type_: PhoneCallType | str,
+               own_number: str, other_number: str,
+               status: str | Enum) -> int | None:
+        type_ = _enum_name(type_)
+        status = _enum_name(status)
+        return self._execute(
+            f"insert into `{self.name}` "
+            f"(`created_at`, `updated_at`, `type`, `own_number`, "
+            f"`other_number`, `status`) "
+            f"values (?, ?, ?, ?, ?, ?)",
+            [(t := int(time())), t, type_, own_number, other_number, status]
+        ).lastrowid
+
+    def update_status(self, id_: int, status: str | Enum, *,
+                      from_status: str | Enum = None,
+                      started_at: int | None | _Empty = _EMPTY,
+                      ended_at: int | None | _Empty = _EMPTY,
+                      extra: dict | None | _Empty = _EMPTY
+                      ) -> bool:
+        status = _enum_name(status)
+        values: dict[str, Any] = {'status': status, 'updated_at': int(time())}
+        if started_at is not _EMPTY:
+            values['started_at'] = started_at
+        if ended_at is not _EMPTY:
+            values['ended_at'] = ended_at
+        if extra is not _EMPTY:
+            if extra is not None:
+                extra = compact_json_dumps(extra)
+            values['extra'] = extra
+        where = {'id': id_}
+        if from_status is not None:
+            where['status'] = _enum_name(from_status)
+        return bool(self._execute(
+            f"update `{self.name}` "
+            f"set {', '.join(f'`{k}` = ?' for k in values)} "
+            f"where {' and '.join(f'`{k}` = ?' for k in where)}",
+            [*values.values(), *where.values()]
+        ).rowcount)
+
+    def delete(self, id_: int) -> bool:
+        return bool(self._execute(
+            f"delete from `{self.name}` where `id` = ?",
+            [id_]
+        ).rowcount)

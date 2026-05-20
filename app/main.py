@@ -14,13 +14,14 @@ from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             IncomingCall, SentSms, ReceivedSms, StatusReport,
                             PinRequiredError, IncorrectPinError)
 from .config import config
-from .db import SIMCardDB, PendingSMSDB, SmsDB
+from .db import SIMCardDB, PendingSMSDB, SmsDB, PhoneCallDB
 from .utils import (timestamp_to_datetime, safe, remove_prefix,
                     run_system_command)
 import phonenumbers
 
 
 SMSType = SmsDB.SMSType
+PhoneCallType = PhoneCallDB.PhoneCallType
 
 
 class PendingSMSStatus(Enum):
@@ -39,6 +40,17 @@ class SentSMSStatus(Enum):
 class ReceivedSMSStatus(Enum):
     UNREAD = 0
     READ = 1
+
+
+class PhoneCallStatus(Enum):
+    CREATED = 0
+    DIALING = 1
+    RINGING = 2
+    ANSWER_REQUESTED = 3
+    ANSWERED = 4
+    HANGUP_REQUESTED = 5
+    ENDED = 6
+    FAILED = 7
 
 
 class PendingSMS(NamedTuple):
@@ -70,11 +82,34 @@ class StoredSMS(NamedTuple):
                 else self.other_number)
 
 
+class StoredPhoneCall(NamedTuple):
+    id: int
+    type: PhoneCallType
+    time: datetime
+    own_number: str
+    other_number: str
+    status: PhoneCallStatus
+    started_at: datetime | None
+    ended_at: datetime | None
+    extra: dict | None
+
+    @property
+    def caller(self) -> str:
+        return (self.own_number if self.type is PhoneCallType.OUTGOING
+                else self.other_number)
+
+    @property
+    def recipient(self) -> str:
+        return (self.own_number if self.type is PhoneCallType.INCOMING
+                else self.other_number)
+
+
 class GSMStore:
 
     sim_card_db = SIMCardDB()
     pending_sms_db = PendingSMSDB()
     sms_db = SmsDB()
+    phone_call_db = PhoneCallDB()
 
     def __init__(self, own_number: str):
         if own_number:
@@ -184,6 +219,39 @@ class GSMStore:
                 limit=limit)
         ))
 
+    def get_phone_call(self, mid: int) -> StoredPhoneCall | None:
+        if not (row := self.phone_call_db.get(mid)):
+            return None
+        return self.phone_call_from_db(row)
+
+    def list_phone_calls(self,
+                         type_: PhoneCallType = None, *,
+                         other_number: str = '',
+                         status: PhoneCallStatus = None,
+                         limit: int = 10) -> list[StoredPhoneCall]:
+        if other_number:
+            other_number = GSMCenter.normalise_number(other_number)
+        return list(map(
+            self.phone_call_from_db,
+            self.phone_call_db.list(
+                type_, self._own_number,
+                other_number=other_number, status=status, limit=limit)
+        ))
+
+    @classmethod
+    def phone_call_from_db(cls, row: dict) -> StoredPhoneCall:
+        started_at = row['started_at']
+        ended_at = row['ended_at']
+        return StoredPhoneCall(
+            row['id'], getattr(PhoneCallType, row['type']),
+            timestamp_to_datetime(row['created_at']),
+            row['own_number'], row['other_number'],
+            getattr(PhoneCallStatus, row['status']),
+            (timestamp_to_datetime(started_at) if started_at else None),
+            (timestamp_to_datetime(ended_at) if ended_at else None),
+            (json_loads(extra) if (extra := row['extra']) else None)
+        )
+
     @classmethod
     def list_active_own_numbers(cls, threshold: int = 60, *,
                                 call_enabled: bool = None,
@@ -206,6 +274,37 @@ class GSMStore:
         return cls.pending_sms_db.insert(
             sender, recipient, content, PendingSMSStatus.CREATED)
 
+    @classmethod
+    def add_phone_call(cls, caller: str, recipient: str) -> int | None:
+        caller = GSMCenter.normalise_number(caller)
+        recipient = GSMCenter.normalise_number(recipient)
+        threshold = 60
+        if caller not in cls.list_active_own_numbers(threshold,
+                                                     call_enabled=True):
+            raise ValueError(
+                f'phone number {caller!r} cannot be used as caller '
+                f'for it has not been active for more than {threshold}s')
+        return cls.phone_call_db.insert(
+            PhoneCallType.OUTGOING, caller, recipient, PhoneCallStatus.CREATED)
+
+    @classmethod
+    def request_phone_call_answer(cls, mid: int) -> bool:
+        return cls.phone_call_db.update_status(
+            mid, PhoneCallStatus.ANSWER_REQUESTED,
+            from_status=PhoneCallStatus.RINGING)
+
+    @classmethod
+    def request_phone_call_hangup(cls, mid: int) -> bool:
+        if not (row := cls.phone_call_db.get(mid)):
+            return False
+        status = getattr(PhoneCallStatus, row['status'])
+        if status in (PhoneCallStatus.ENDED, PhoneCallStatus.FAILED):
+            return False
+        if status is PhoneCallStatus.HANGUP_REQUESTED:
+            return True
+        return cls.phone_call_db.update_status(
+            mid, PhoneCallStatus.HANGUP_REQUESTED, from_status=status)
+
 
 class DeviceOptions(NamedTuple):
     baud_rate: int = 115200
@@ -215,6 +314,8 @@ class DeviceOptions(NamedTuple):
     call_enabled: bool = False
     on_sms_received: str = ''
     on_sms_received_env: dict = None
+    on_call_received: str = ''
+    on_call_received_env: dict = None
 
     @classmethod
     def from_dict(cls, d: dict) -> 'DeviceOptions':
@@ -226,15 +327,49 @@ class DeviceOptions(NamedTuple):
             args['pin'] = str(pin)
         if own_number := d.get('own_number'):
             args['own_number'] = str(own_number)
-        if (sms_enabled := d.get('sms_enabled')) is not None:
+        sms_conf = _dict_or_empty(d.get('sms'))
+        call_conf = _dict_or_empty(d.get('calls'))
+        sms_received = _dict_or_empty(sms_conf.get('on_received'))
+        call_hooks = _dict_or_empty(call_conf.get('hooks'))
+        call_received = _dict_or_empty(call_hooks.get('received'))
+
+        if (sms_enabled := _first_defined(
+                sms_conf.get('enabled'), d.get('sms_enabled'))) is not None:
             args['sms_enabled'] = bool(sms_enabled)
-        if (call_enabled := d.get('call_enabled')) is not None:
+        if (call_enabled := _first_defined(
+                call_conf.get('enabled'), d.get('call_enabled'))) is not None:
             args['call_enabled'] = bool(call_enabled)
-        if on_sms_received := d.get('on_sms_received'):
+        if on_sms_received := _first_truthy(
+                sms_received.get('command'), d.get('on_sms_received')):
             args['on_sms_received'] = str(on_sms_received)
-        if on_sms_received_env := d.get('on_sms_received_env'):
+        if on_sms_received_env := _first_truthy(
+                sms_received.get('env'), d.get('on_sms_received_env')):
             args['on_sms_received_env'] = on_sms_received_env
+        if on_call_received := _first_truthy(
+                call_received.get('command'), d.get('on_call_received')):
+            args['on_call_received'] = str(on_call_received)
+        if on_call_received_env := _first_truthy(
+                call_received.get('env'), d.get('on_call_received_env')):
+            args['on_call_received_env'] = on_call_received_env
         return cls(**args)
+
+
+def _dict_or_empty(value: dict | None) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _first_defined(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _first_truthy(*values):
+    for value in values:
+        if value:
+            return value
+    return None
 
 
 class GSMCenter:
@@ -246,6 +381,9 @@ class GSMCenter:
     StoredSMS = StoredSMS
     SentSMSStatus = SentSMSStatus
     ReceivedSMSStatus = ReceivedSMSStatus
+    PhoneCallType = PhoneCallType
+    StoredPhoneCall = StoredPhoneCall
+    PhoneCallStatus = PhoneCallStatus
     DeviceOptions = DeviceOptions
 
     def __init__(self, port: str = '', **kwargs):
@@ -271,10 +409,12 @@ class GSMCenter:
         self._pin = options.pin
         self._own_number = ''
         self._is_alive = True
+        self._active_calls = {}
 
         self._connect()
         self._own_number = self._check_own_number()
         self._store = GSMStore(self._own_number)
+        self._clear_stale_phone_calls()
         self.check_network_coverage()
         self._check_modem_stored_smss()
         self._loop_thread = loop_thread = Thread(target=self._loop)
@@ -297,6 +437,7 @@ class GSMCenter:
         self._connect()
         self._own_number = self._check_own_number()
         self._store = GSMStore(self._own_number)
+        self._clear_stale_phone_calls()
         self.check_network_coverage()
         self._check_modem_stored_smss()
         self._loop_thread = loop_thread = Thread(target=self._loop)
@@ -416,7 +557,175 @@ class GSMCenter:
     def _handle_incoming_call(self, call: IncomingCall):
         sender = self.normalise_number(call.number)
         self.logger.info(f'received a call from {sender!r}')
-        print('call debug', vars(call))  # still working it out
+        mid = self._store.phone_call_db.insert(
+            PhoneCallType.INCOMING, self._own_number, sender,
+            PhoneCallStatus.RINGING)
+        self._active_calls[mid] = call
+        options = self._options
+        if cmd := options.on_call_received:
+            run_system_command(cmd.format(
+                CALL_ID=mid,
+                CALL_CALLER=sender,
+                CALL_RECIPIENT=self._own_number,
+                CALL_TIMESTAMP=int(time()),
+                CALL_TIME_STR=timestamp_to_datetime(time())
+            ), env=options.on_call_received_env)
+
+    def _clear_stale_phone_calls(self):
+        if not self._options.call_enabled:
+            return
+
+        db = self._store.phone_call_db
+        stale_statuses = (
+            PhoneCallStatus.DIALING,
+            PhoneCallStatus.RINGING,
+            PhoneCallStatus.ANSWER_REQUESTED,
+            PhoneCallStatus.ANSWERED,
+            PhoneCallStatus.HANGUP_REQUESTED,
+        )
+        count = 0
+        for status in stale_statuses:
+            while rows := db.list(
+                    own_number=self._own_number, status=status, limit=100):
+                for row in rows:
+                    if db.update_status(
+                            row['id'], PhoneCallStatus.ENDED,
+                            from_status=status, ended_at=int(time()),
+                            extra=dict(
+                                error='loop restarted while call was active')):
+                        count += 1
+        if count:
+            self.logger.warning(
+                f'marked {count} stale phone call(s) as ended')
+
+    def make_phone_call(self, recipient: str, *,
+                        wait_for_answer: bool | float = False
+                        ) -> int | None:
+        if not self._options.call_enabled:
+            raise RuntimeError(f'phone calls are not enabled on this device')
+
+        if self.check_network_coverage() <= 0:
+            return None
+
+        logger = self.logger
+        recipient = self.normalise_number(recipient)
+        call_db = self._store.phone_call_db
+        statuses = PhoneCallStatus
+        mid = call_db.insert(
+            PhoneCallType.OUTGOING, self._own_number, recipient,
+            statuses.DIALING)
+        if mid is None:
+            raise RuntimeError('phone call could not be inserted into DB')
+
+        logger.info(f'making phone call #{mid} to {recipient!r}...')
+        try:
+            call = self._modem.dial(
+                self.simplify_number(recipient),
+                timeout=(30 if isinstance(wait_for_answer, bool)
+                         else wait_for_answer),
+                callStatusUpdateCallbackFunc=(
+                    self._call_status_callback(mid)))
+        except Exception as e:
+            logger.error(f'phone call #{mid} failed due to {e!r}')
+            call_db.update_status(
+                mid, statuses.FAILED, ended_at=int(time()),
+                extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
+        else:
+            self._active_calls[mid] = call
+            status = statuses.ANSWERED if getattr(call, 'answered', False) \
+                else statuses.DIALING
+            call_db.update_status(
+                mid, status,
+                started_at=(int(time()) if status is statuses.ANSWERED
+                            else None))
+
+        return mid
+
+    def _call_status_callback(self, mid: int):
+        def callback(call):
+            self.logger.info(f'phone call #{mid} status updated: {call}')
+            if getattr(call, 'answered', False):
+                self._store.phone_call_db.update_status(
+                    mid, PhoneCallStatus.ANSWERED, started_at=int(time()))
+            if not getattr(call, 'active', True):
+                self._store.phone_call_db.update_status(
+                    mid, PhoneCallStatus.ENDED, ended_at=int(time()))
+                self._active_calls.pop(mid, None)
+        return callback
+
+    def process_phone_call_requests(self):
+        if not self._options.call_enabled:
+            return
+
+        db = self._store.phone_call_db
+        statuses = PhoneCallStatus
+        logger = self.logger
+
+        for row in db.list(
+                PhoneCallType.OUTGOING, self._own_number,
+                status=statuses.CREATED, limit=10):
+            mid = row['id']
+            if not db.update_status(
+                    mid, statuses.DIALING, from_status=statuses.CREATED):
+                continue
+            try:
+                call = self._modem.dial(
+                    self.simplify_number(row['other_number']),
+                    callStatusUpdateCallbackFunc=(
+                        self._call_status_callback(mid)))
+            except Exception as e:
+                logger.error(f'phone call #{mid} failed due to {e!r}')
+                db.update_status(
+                    mid, statuses.FAILED, ended_at=int(time()),
+                    extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
+            else:
+                self._active_calls[mid] = call
+                db.update_status(mid, statuses.DIALING)
+
+        for row in db.list(
+                own_number=self._own_number,
+                status=statuses.ANSWER_REQUESTED, limit=10):
+            self._answer_phone_call(row['id'])
+
+        for row in db.list(
+                own_number=self._own_number,
+                status=statuses.HANGUP_REQUESTED, limit=10):
+            self._hangup_phone_call(row['id'])
+
+    def _answer_phone_call(self, mid: int):
+        statuses = PhoneCallStatus
+        if not (call := self._active_calls.get(mid)):
+            self._store.phone_call_db.update_status(
+                mid, statuses.FAILED, ended_at=int(time()),
+                extra=dict(error='live call is not available'))
+            return
+        try:
+            call.answer()
+        except Exception as e:
+            self._store.phone_call_db.update_status(
+                mid, statuses.FAILED, ended_at=int(time()),
+                extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
+        else:
+            self._store.phone_call_db.update_status(
+                mid, statuses.ANSWERED, started_at=int(time()))
+
+    def _hangup_phone_call(self, mid: int):
+        statuses = PhoneCallStatus
+        if not (call := self._active_calls.get(mid)):
+            self._store.phone_call_db.update_status(
+                mid, statuses.ENDED, ended_at=int(time()),
+                extra=dict(error='live call is not available'))
+            return
+        try:
+            call.hangup()
+        except Exception as e:
+            self._store.phone_call_db.update_status(
+                mid, statuses.FAILED, ended_at=int(time()),
+                extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
+        else:
+            self._active_calls.pop(mid, None)
+            self._store.phone_call_db.update_status(
+                mid, statuses.ENDED, ended_at=int(time()))
 
     def _handle_received_sms(self, sms: ReceivedSms):
         sender = self.normalise_number(sms.number)
@@ -546,6 +855,7 @@ class GSMCenter:
               check_received_interval: int = 300):
         update_sim_status = safe(self._update_sim_card_status)
         process_pending = safe(self.process_pending_smss)
+        process_call_requests = safe(self.process_phone_call_requests)
         check_coverage = safe(self.check_network_coverage)
         check_received = safe(self._check_modem_stored_smss)
 
@@ -570,6 +880,7 @@ class GSMCenter:
                 info(f'looping {count}/inf')
             update_sim_status()
             process_pending()
+            process_call_requests()
             now = time()
             if now - last_coverage_check >= coverage_interval:
                 last_coverage_check = now
