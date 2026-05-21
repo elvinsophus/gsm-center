@@ -254,7 +254,7 @@ the recorded call is for.
 
 ## WebSocket API Roadmap
 
-WebSockets should carry raw PCM frames for live integrations:
+WebSockets carry raw PCM frames for live integrations:
 
 ```text
 WS /ws/audio/devices/<name>/input
@@ -278,6 +278,19 @@ This enables future integrations:
 - TTS publishes output frames.
 - A bridge service connects call audio to another network.
 - A browser UI monitors or participates in a call.
+
+Implementation notes:
+
+- `run_api.sh` starts Gunicorn with exactly one threaded worker. This keeps
+  HTTP and WebSocket routes in one application process while preserving the
+  modem ownership boundary and in-memory playback ownership locks.
+- Device routes bind directly to configured `AUDIO_DEVICES`.
+- `WS /ws/calls/<id>/audio` resolves the call's `own_number` back to its
+  configured `DEVICES.*.calls.audio_device`.
+- Input streams run `arecord` and send binary PCM frames to the client.
+- Output streams receive binary PCM frames and write them to `aplay`.
+- Duplex streams combine both directions.
+- Playback has one active owner per configured audio device output.
 
 ## Implementation Steps
 
@@ -334,10 +347,12 @@ This enables future integrations:
 
 ### Step 7: Add WebSocket Audio Streams
 
-- Expose input, output, and duplex streams.
-- Use explicit PCM stream parameters.
-- Add backpressure and one-owner rules for playback.
-- Make this the foundation for browser audio, STT, and TTS.
+- Expose input, output, and duplex streams. Implemented.
+- Use explicit PCM stream parameters. Implemented from `AUDIO_DEVICES`.
+- Add backpressure and one-owner rules for playback. Implemented with blocking
+  writes and one active output owner per audio device.
+- Make this the foundation for browser audio, STT, and TTS. Implemented as raw
+  PCM transport; higher-level adapters remain future work.
 
 ### Step 8: Add Optional STT/TTS Adapters
 

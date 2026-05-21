@@ -61,3 +61,5 @@ def _init_logging():
 def _init_api(_app):
     from app.api import init_app
     init_app(_app)
+    from app.ws import init_app
+    init_app(_app)

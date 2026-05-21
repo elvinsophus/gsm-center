@@ -17,6 +17,11 @@ This split is intentional. The API process should not open modem serial ports.
 For calls, the API writes answer/hangup/dial requests and the loop process
 executes them.
 
+The API is served by `run_api.sh` through Gunicorn with exactly one threaded
+worker, so HTTP routes and WebSocket audio streams share one application
+process. WebSocket routes may open ALSA audio devices, but they still do not
+instantiate `GSMCenter` or open modem serial ports.
+
 ## Current API
 
 ```text
@@ -25,6 +30,10 @@ GET  /audio/devices
 GET  /audio/devices/<name>
 POST /audio/devices/<name>/test-record
 POST /audio/devices/<name>/test-play
+WS   /ws/audio/devices/<name>/input
+WS   /ws/audio/devices/<name>/output
+WS   /ws/audio/devices/<name>/duplex
+WS   /ws/calls/<id>/audio
 POST /sms
 GET  /calls
 GET  /calls/<id>

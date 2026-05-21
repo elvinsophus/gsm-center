@@ -29,6 +29,21 @@ _FORMAT_ALIASES = {
     'float_be': 'FLOAT_BE',
 }
 
+_FORMAT_SAMPLE_WIDTHS = {
+    's8': 1,
+    'u8': 1,
+    's16le': 2,
+    's16be': 2,
+    'u16le': 2,
+    'u16be': 2,
+    's24le': 3,
+    's24be': 3,
+    's32le': 4,
+    's32be': 4,
+    'float_le': 4,
+    'float_be': 4,
+}
+
 
 def record_audio_sample(device: AudioDeviceOptions, path: str,
                         seconds: int = 3) -> AudioCommandResult:
@@ -56,6 +71,46 @@ def play_audio_sample(device: AudioDeviceOptions, path: str
     input_path = _validate_path(path, 'path')
     command = ['aplay', '-D', device.output, str(input_path)]
     return _run_audio_command(command)
+
+
+def record_pcm_command(device: AudioDeviceOptions) -> list[str]:
+    if not device.input:
+        raise ValueError(f'audio device {device.name!r} has no input')
+    return [
+        'arecord',
+        '-D', device.input,
+        '-f', _alsa_format(device.format),
+        '-r', str(device.sample_rate),
+        '-c', str(device.channels),
+        '-t', 'raw',
+    ]
+
+
+def play_pcm_command(device: AudioDeviceOptions) -> list[str]:
+    if not device.output:
+        raise ValueError(f'audio device {device.name!r} has no output')
+    return [
+        'aplay',
+        '-D', device.output,
+        '-f', _alsa_format(device.format),
+        '-r', str(device.sample_rate),
+        '-c', str(device.channels),
+        '-t', 'raw',
+    ]
+
+
+def pcm_frame_bytes(device: AudioDeviceOptions) -> int:
+    sample_width = _FORMAT_SAMPLE_WIDTHS.get(device.format.lower())
+    if sample_width is None:
+        raise ValueError(f'unsupported audio format {device.format!r}')
+    if device.sample_rate <= 0:
+        raise ValueError('sample_rate must be positive')
+    if device.channels <= 0:
+        raise ValueError('channels must be positive')
+    if device.frame_ms <= 0:
+        raise ValueError('frame_ms must be positive')
+    size = device.sample_rate * device.channels * sample_width
+    return max(1, size * device.frame_ms // 1000)
 
 
 def _validate_seconds(seconds: int) -> int:

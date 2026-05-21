@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.audio import play_audio_sample, record_audio_sample
+from app.audio import (pcm_frame_bytes, play_audio_sample, play_pcm_command,
+                       record_audio_sample, record_pcm_command)
 from app.main import GSMCenter
 
 
@@ -64,3 +65,33 @@ class TestPlayAudioSample:
     def test_requires_output(self):
         with pytest.raises(ValueError, match='no output'):
             play_audio_sample(audio_device(output=''), '/tmp/sample.wav')
+
+
+class TestPCMStreamCommands:
+
+    def test_record_pcm_command_uses_raw_configured_input(self):
+        assert record_pcm_command(audio_device()) == [
+            'arecord',
+            '-D', 'plughw:3,0',
+            '-f', 'S16_LE',
+            '-r', '8000',
+            '-c', '1',
+            '-t', 'raw',
+        ]
+
+    def test_play_pcm_command_uses_raw_configured_output(self):
+        assert play_pcm_command(audio_device()) == [
+            'aplay',
+            '-D', 'plughw:3,0',
+            '-f', 'S16_LE',
+            '-r', '8000',
+            '-c', '1',
+            '-t', 'raw',
+        ]
+
+    def test_pcm_frame_bytes_uses_configured_frame_duration(self):
+        assert pcm_frame_bytes(audio_device()) == 320
+
+    def test_pcm_frame_bytes_rejects_unknown_format(self):
+        with pytest.raises(ValueError, match='unsupported audio format'):
+            pcm_frame_bytes(audio_device()._replace(format='ulaw'))

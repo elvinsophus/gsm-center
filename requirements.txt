@@ -1,10 +1,11 @@
 click~=8.1
 colorlog~=6.7
 flask~=3.1
+gunicorn~=23.0
 ipython~=9.13
 phonenumbers~=9.0
 python-dateutil~=2.9
 python-gsmmodem-new~=0.13.0
 ruamel.yaml~=0.19
+simple-websocket~=1.1
 traitlets~=5.15
-uwsgi~=2.0

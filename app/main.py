@@ -519,6 +519,14 @@ class DeviceOptions(NamedTuple):
             args['call_recording_format'] = str(recording_format)
         return cls(**args)
 
+    @classmethod
+    def list(cls) -> dict[str, 'DeviceOptions']:
+        dev_confs = config.get('DEVICES') or {}
+        return {
+            port: cls.from_dict(_dict_or_empty(conf))
+            for port, conf in dev_confs.items()
+        }
+
 
 class AudioDeviceOptions(NamedTuple):
     name: str

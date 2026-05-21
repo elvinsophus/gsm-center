@@ -26,7 +26,7 @@ cp config.yaml.template config.yaml
 # Run REST API (default port 25601)
 ./run_api.sh [PORT] [VENV_DIR]
 # Or directly:
-source venv/bin/activate && python run_api.py
+source venv/bin/activate && python run_api.py --host 127.0.0.1 --port 25601
 
 # Run GSM modem listener loop
 ./run_loop.sh
@@ -49,6 +49,12 @@ gsm-center-loop  -> modem owner, sends SMS, receives SMS, handles calls
 Keep this ownership boundary intact. The API process should not instantiate
 `GSMCenter` or open serial ports. Call actions are queued in SQLite and executed
 by the loop process that owns the modem and live call objects.
+
+The API process also owns HTTP/WebSocket audio endpoints. Those endpoints may
+open configured ALSA audio devices, but they must not open GSM modem serial
+ports. `run_api.sh` uses Gunicorn with exactly one threaded worker so HTTP and
+WebSocket routes live in one application process; do not increase the worker
+count unless shared in-memory audio ownership is moved to an external lock.
 
 ## Tests
 
@@ -89,6 +95,10 @@ python manage.py test                              # Healthcheck (prints "Hello 
 | `GET` | `/audio/devices/<name>` | Get configured audio device detail |
 | `POST` | `/audio/devices/<name>/test-record` | Record a short WAV through configured input |
 | `POST` | `/audio/devices/<name>/test-play` | Play a WAV through configured output |
+| `WS` | `/ws/audio/devices/<name>/input` | Stream raw PCM capture frames from a configured input |
+| `WS` | `/ws/audio/devices/<name>/output` | Stream raw PCM playback frames to a configured output |
+| `WS` | `/ws/audio/devices/<name>/duplex` | Bidirectional raw PCM stream for a configured audio device |
+| `WS` | `/ws/calls/<id>/audio` | Bidirectional raw PCM stream for an answered call's configured audio device |
 | `POST` | `/sms` | Queue SMS: `{"sender": "+...", "recipient": "+...", "content": "..."}` |
 | `GET` | `/calls` | List phone calls, optionally filtered by `own_number`, `other_number`, `type`, `status`, `limit` |
 | `GET` | `/calls/<id>` | Get phone call detail |
@@ -101,7 +111,7 @@ python manage.py test                              # Healthcheck (prints "Hello 
 
 ### Entry Points
 
-- `run_api.py` - WSGI entry point for Flask
+- `run_api.py` - threaded Flask API/WebSocket entry point
 - `manage.py` - Flask CLI with custom commands
 - `app/__init__.py` - Flask app factory (`create_app`), logging config
 
@@ -144,6 +154,7 @@ SQLite tables use a thread-local connection wrapper:
 - **`received_sms_part`** - persisted multipart inbound SMS parts, used to
   assemble complete messages across out-of-order delivery and loop restarts
 - **`phone_call`** - outgoing/incoming call history and request queue
+- **`phone_call_recording`** - call recording metadata and lifecycle state
 
 ## Flow
 
@@ -282,6 +293,9 @@ Keep audio generic:
   shutdown.
 - Recording is modeled as a managed media session with metadata in
   `phone_call_recording`, not as fixed built-in call behavior.
+- WebSocket audio streams carry raw PCM frames using `AUDIO_DEVICES`
+  `format`, `sample_rate`, `channels`, and `frame_ms`. Playback streams enforce
+  one active owner per configured audio device output.
 
 ## SMS Multipart Notes
 
