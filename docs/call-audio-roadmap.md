@@ -218,12 +218,22 @@ GET /audio/devices
 GET /audio/devices/<name>
 ```
 
-Add audio smoke tests later:
+Audio smoke tests:
 
 ```text
 POST /audio/devices/<name>/test-record
 POST /audio/devices/<name>/test-play
 ```
+
+The matching CLI commands are:
+
+```bash
+python manage.py test-audio-record NAME PATH --seconds 3
+python manage.py test-audio-play NAME PATH
+```
+
+Here, `NAME` is an `AUDIO_DEVICES` key such as `gsm_usb`. For recording,
+`PATH` is the output WAV file. For playback, `PATH` is the input WAV file.
 
 Add recording control:
 

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import pytest
+from app.audio import AudioCommandResult
 from unittest.mock import patch
 
 
@@ -44,6 +45,67 @@ class TestGetAudioDevices:
     def test_get_audio_device_missing_returns_404(self, client):
         with patch('app.api.AudioDeviceOptions.get', return_value=None):
             resp = client.get('/audio/devices/missing')
+
+        assert resp.status_code == 404
+
+
+class TestAudioSmokeTests:
+
+    def test_record_audio_device_runs_smoke_test(self, client):
+        from app.main import GSMCenter
+        device = GSMCenter.AudioDeviceOptions(
+            'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20)
+        result = AudioCommandResult(['arecord'], 0, 'ok', '')
+
+        with patch('app.api.AudioDeviceOptions.get', return_value=device), \
+                patch('app.api.record_audio_sample',
+                      return_value=result) as record:
+            resp = client.post('/audio/devices/gsm_usb/test-record', json={
+                'path': '/tmp/sample.wav',
+                'seconds': 2,
+            })
+
+        assert resp.status_code == 200
+        record.assert_called_once_with(device, '/tmp/sample.wav', 2)
+        assert resp.json == {
+            'command': ['arecord'],
+            'return_code': 0,
+            'stdout': 'ok',
+            'stderr': '',
+        }
+
+    def test_record_audio_device_requires_path(self, client):
+        from app.main import GSMCenter
+        device = GSMCenter.AudioDeviceOptions(
+            'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20)
+
+        with patch('app.api.AudioDeviceOptions.get', return_value=device):
+            resp = client.post('/audio/devices/gsm_usb/test-record', json={})
+
+        assert resp.status_code == 400
+
+    def test_play_audio_device_runs_smoke_test(self, client):
+        from app.main import GSMCenter
+        device = GSMCenter.AudioDeviceOptions(
+            'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20)
+        result = AudioCommandResult(['aplay'], 0, '', '')
+
+        with patch('app.api.AudioDeviceOptions.get', return_value=device), \
+                patch('app.api.play_audio_sample',
+                      return_value=result) as play:
+            resp = client.post('/audio/devices/gsm_usb/test-play', json={
+                'path': '/tmp/sample.wav',
+            })
+
+        assert resp.status_code == 200
+        play.assert_called_once_with(device, '/tmp/sample.wav')
+        assert resp.json['command'] == ['aplay']
+
+    def test_play_audio_device_missing_returns_404(self, client):
+        with patch('app.api.AudioDeviceOptions.get', return_value=None):
+            resp = client.post('/audio/devices/missing/test-play', json={
+                'path': '/tmp/sample.wav',
+            })
 
         assert resp.status_code == 404
 

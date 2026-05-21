@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 
 from flask import Flask, Blueprint, request, jsonify
+from subprocess import CalledProcessError, TimeoutExpired
+from .audio import (AudioCommandResult, play_audio_sample,
+                    record_audio_sample)
 from .main import (AudioDeviceOptions, GSMStore, PhoneCallStatus,
                    PhoneCallType, StoredPhoneCall)
 
@@ -26,6 +29,41 @@ def get_audio_device(name):
     if not (device := AudioDeviceOptions.get(name)):
         return f'audio device {name!r} not found', 404
     return jsonify(_audio_device_to_json(device))
+
+
+@bp.route('/audio/devices/<name>/test-record', methods=['POST'])
+def test_record_audio_device(name):
+    if not (device := AudioDeviceOptions.get(name)):
+        return f'audio device {name!r} not found', 404
+    if not (args := request.json):
+        return 'invalid argument', 400
+    if not isinstance(args, dict):
+        return 'invalid argument', 400
+    try:
+        result = record_audio_sample(
+            device, args.get('path'), int(args.get('seconds', 3)))
+    except (TypeError, ValueError) as e:
+        return str(e), 400
+    except (CalledProcessError, TimeoutExpired, OSError) as e:
+        return str(e), 500
+    return jsonify(_audio_command_result_to_json(result))
+
+
+@bp.route('/audio/devices/<name>/test-play', methods=['POST'])
+def test_play_audio_device(name):
+    if not (device := AudioDeviceOptions.get(name)):
+        return f'audio device {name!r} not found', 404
+    if not (args := request.json):
+        return 'invalid argument', 400
+    if not isinstance(args, dict):
+        return 'invalid argument', 400
+    try:
+        result = play_audio_sample(device, args.get('path'))
+    except (TypeError, ValueError) as e:
+        return str(e), 400
+    except (CalledProcessError, TimeoutExpired, OSError) as e:
+        return str(e), 500
+    return jsonify(_audio_command_result_to_json(result))
 
 
 @bp.route('/sms', methods=['POST'])
@@ -144,6 +182,15 @@ def _audio_device_to_json(device: AudioDeviceOptions) -> dict:
         channels=device.channels,
         format=device.format,
         frame_ms=device.frame_ms,
+    )
+
+
+def _audio_command_result_to_json(result: AudioCommandResult) -> dict:
+    return dict(
+        command=result.command,
+        return_code=result.return_code,
+        stdout=result.stdout,
+        stderr=result.stderr,
     )
 
 

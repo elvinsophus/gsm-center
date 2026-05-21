@@ -65,16 +65,18 @@ normalization, multipart SMS assembly, and call restart/request edge cases.
 
 ```bash
 python manage.py loop [PORT]                       # Start modem listener for a port or all devices
-python manage.py list_sent_smss [SENDER] -n 10     # View sent SMS
-python manage.py list_received_smss [RCPT] -n 10   # View received SMS
-python manage.py list_smss [NUMBER] -n 10          # View all SMS for a number
-python manage.py list_sms_dialog NUM1 NUM2 -n 10   # View conversation thread
-python manage.py preview_sms_dialogs [NUM] -n 10   # Preview all conversation threads
-python manage.py list_phone_calls [OWN] -n 10      # View phone calls
+python manage.py list-sent-smss [SENDER] -n 10     # View sent SMS
+python manage.py list-received-smss [RCPT] -n 10   # View received SMS
+python manage.py list-smss [NUMBER] -n 10          # View all SMS for a number
+python manage.py list-sms-dialog NUM1 NUM2 -n 10   # View conversation thread
+python manage.py preview-sms-dialogs [NUM] -n 10   # Preview all conversation threads
+python manage.py list-phone-calls [OWN] -n 10      # View phone calls
 python manage.py call CALLER RECIPIENT             # Queue outgoing phone call
-python manage.py answer_call CALL_ID               # Queue answer request
-python manage.py hangup_call CALL_ID               # Queue hangup request
-python manage.py list_audio_devices                # List configured audio devices
+python manage.py answer-call CALL_ID               # Queue answer request
+python manage.py hangup-call CALL_ID               # Queue hangup request
+python manage.py list-audio-devices                # List configured audio devices
+python manage.py test-audio-record NAME PATH       # NAME is an AUDIO_DEVICES key; PATH is output WAV
+python manage.py test-audio-play NAME PATH         # NAME is an AUDIO_DEVICES key; PATH is input WAV
 python manage.py test                              # Healthcheck (prints "Hello world!")
 ```
 
@@ -85,6 +87,8 @@ python manage.py test                              # Healthcheck (prints "Hello 
 | `GET` | `/own-numbers` | List active phone numbers (updated in last 60s) |
 | `GET` | `/audio/devices` | List configured audio devices |
 | `GET` | `/audio/devices/<name>` | Get configured audio device detail |
+| `POST` | `/audio/devices/<name>/test-record` | Record a short WAV through configured input |
+| `POST` | `/audio/devices/<name>/test-play` | Play a WAV through configured output |
 | `POST` | `/sms` | Queue SMS: `{"sender": "+...", "recipient": "+...", "content": "..."}` |
 | `GET` | `/calls` | List phone calls, optionally filtered by `own_number`, `other_number`, `type`, `status`, `limit` |
 | `GET` | `/calls/<id>` | Get phone call detail |

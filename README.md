@@ -23,6 +23,8 @@ executes them.
 GET  /own-numbers
 GET  /audio/devices
 GET  /audio/devices/<name>
+POST /audio/devices/<name>/test-record
+POST /audio/devices/<name>/test-play
 POST /sms
 GET  /calls
 GET  /calls/<id>
@@ -35,16 +37,18 @@ POST /calls/<id>/hangup
 
 ```bash
 python manage.py loop [PORT]
-python manage.py list_sent_smss [SENDER] -n 10
-python manage.py list_received_smss [RCPT] -n 10
-python manage.py list_smss [NUMBER] -n 10
-python manage.py list_sms_dialog NUM1 NUM2 -n 10
-python manage.py preview_sms_dialogs [NUM] -n 10
-python manage.py list_phone_calls [OWN_NUMBER] -n 10
+python manage.py list-sent-smss [SENDER] -n 10
+python manage.py list-received-smss [RCPT] -n 10
+python manage.py list-smss [NUMBER] -n 10
+python manage.py list-sms-dialog NUM1 NUM2 -n 10
+python manage.py preview-sms-dialogs [NUM] -n 10
+python manage.py list-phone-calls [OWN_NUMBER] -n 10
 python manage.py call CALLER RECIPIENT
-python manage.py answer_call CALL_ID
-python manage.py hangup_call CALL_ID
-python manage.py list_audio_devices
+python manage.py answer-call CALL_ID
+python manage.py hangup-call CALL_ID
+python manage.py list-audio-devices
+python manage.py test-audio-record NAME PATH --seconds 3  # NAME: AUDIO_DEVICES key; PATH: output WAV
+python manage.py test-audio-play NAME PATH                 # NAME: AUDIO_DEVICES key; PATH: input WAV
 ```
 
 ## Device Configuration Shape
