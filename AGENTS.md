@@ -235,6 +235,9 @@ DEVICES:
         failed:
           command: "./scripts/on-call-failed.sh"
           env: {}
+      audio:
+        command: "./scripts/call-audio-session.sh"
+        env: {}
 ```
 
 Legacy flat keys are still supported:
@@ -267,7 +270,9 @@ Keep audio generic:
 
 - Audio devices are reusable resources, not GSM-only internals.
 - Calls may bind to an audio device.
-- Hooks and managed commands decide behavior.
+- Hooks and managed commands decide behavior. `calls.audio.command` starts
+  when a call becomes `ANSWERED` and is stopped on `ENDED`/`FAILED` or loop
+  shutdown.
 - Recording should be modeled as a media session with metadata, not as fixed
   built-in call behavior.
 

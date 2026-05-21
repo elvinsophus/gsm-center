@@ -38,6 +38,10 @@ class TestDeviceOptions:
             'calls': {
                 'enabled': True,
                 'audio_device': 'gsm_usb',
+                'audio': {
+                    'command': './call-audio.sh',
+                    'env': {'D': '4'},
+                },
                 'hooks': {
                     'received': {
                         'command': './call.sh',
@@ -72,6 +76,8 @@ class TestDeviceOptions:
         assert options.on_call_answered_env == {'C': '3'}
         assert options.on_call_ended == './ended.sh'
         assert options.on_call_failed == './failed.sh'
+        assert options.call_audio_command == './call-audio.sh'
+        assert options.call_audio_env == {'D': '4'}
 
     def test_grouped_options_take_precedence_over_legacy_options(self):
         options = GSMCenter.DeviceOptions.from_dict({

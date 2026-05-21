@@ -105,6 +105,75 @@ class TestPhoneCallHooks:
         run.assert_not_called()
 
 
+class TestManagedCallAudio:
+
+    def make_center(self):
+        center = object.__new__(GSMCenter)
+        center._options = GSMCenter.DeviceOptions(
+            call_enabled=True,
+            audio_device='gsm_usb',
+            call_audio_command='./audio {CALL_ID} {CALL_AUDIO_INPUT}',
+            call_audio_env={'MODE': 'test'})
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._call_audio_processes = {}
+        center.logger = Mock()
+        return center
+
+    def test_answered_call_starts_managed_audio_process(self, fresh_db):
+        center = self.make_center()
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'RINGING')
+        process = Mock()
+        process.pid = 1234
+        audio = GSMCenter.AudioDeviceOptions(
+            'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20)
+
+        with patch('app.main.AudioDeviceOptions.get', return_value=audio), \
+                patch('app.main.subprocess.Popen',
+                      return_value=process) as popen:
+            center._update_phone_call_status(
+                mid, GSMCenter.PhoneCallStatus.ANSWERED, started_at=1700000000)
+
+        assert center._call_audio_processes[mid] is process
+        popen.assert_called_once()
+        assert popen.call_args.args[0] == ['./audio', str(mid), 'plughw:3,0']
+        assert popen.call_args.kwargs['env']['MODE'] == 'test'
+        row = GSMStore.phone_call_db.get(mid)
+        assert '"call_audio_pid":1234' in row['extra']
+
+    def test_terminal_call_stops_managed_audio_process(self, fresh_db):
+        center = self.make_center()
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'ANSWERED')
+        process = Mock()
+        process.poll.return_value = None
+        process.returncode = 0
+        center._call_audio_processes[mid] = process
+
+        center._update_phone_call_status(
+            mid, GSMCenter.PhoneCallStatus.ENDED, ended_at=1700000060)
+
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+        assert mid not in center._call_audio_processes
+        row = GSMStore.phone_call_db.get(mid)
+        assert '"call_audio_return_code":0' in row['extra']
+
+    def test_stop_all_managed_audio_processes(self, fresh_db):
+        center = self.make_center()
+        first = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'ANSWERED')
+        second = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, THIRD_NUMBER, 'ANSWERED')
+        center._call_audio_processes[first] = Mock()
+        center._call_audio_processes[second] = Mock()
+
+        center._stop_all_call_audio_processes()
+
+        assert center._call_audio_processes == {}
+
+
 class TestMultipartSMS:
 
     def test_add_received_sms_waits_for_missing_parts(self, fresh_db):

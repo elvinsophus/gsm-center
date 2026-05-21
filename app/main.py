@@ -11,6 +11,8 @@ from traceback import format_tb
 from logging import getLogger
 from typing import NamedTuple
 from os import environ
+import shlex
+import subprocess
 from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             IncomingCall, SentSms, ReceivedSms, StatusReport,
                             PinRequiredError, IncorrectPinError)
@@ -400,6 +402,8 @@ class DeviceOptions(NamedTuple):
     on_call_ended_env: dict = None
     on_call_failed: str = ''
     on_call_failed_env: dict = None
+    call_audio_command: str = ''
+    call_audio_env: dict = None
 
     @classmethod
     def from_dict(cls, d: dict) -> 'DeviceOptions':
@@ -415,6 +419,7 @@ class DeviceOptions(NamedTuple):
         call_conf = _dict_or_empty(d.get('calls'))
         sms_received = _dict_or_empty(sms_conf.get('on_received'))
         call_hooks = _dict_or_empty(call_conf.get('hooks'))
+        call_audio = _dict_or_empty(call_conf.get('audio'))
 
         if (sms_enabled := _first_defined(
                 sms_conf.get('enabled'), d.get('sms_enabled'))) is not None:
@@ -439,6 +444,10 @@ class DeviceOptions(NamedTuple):
                 args[f'on_call_{name}'] = str(cmd)
             if env := _first_truthy(hook.get('env'), legacy_env):
                 args[f'on_call_{name}_env'] = env
+        if call_audio_command := _first_truthy(call_audio.get('command')):
+            args['call_audio_command'] = str(call_audio_command)
+        if call_audio_env := _first_truthy(call_audio.get('env')):
+            args['call_audio_env'] = call_audio_env
         return cls(**args)
 
 
@@ -597,6 +606,7 @@ class GSMCenter:
         self._own_number = ''
         self._is_alive = True
         self._active_calls = {}
+        self._call_audio_processes = {}
 
         self._connect()
         self._own_number = self._check_own_number()
@@ -625,6 +635,7 @@ class GSMCenter:
         self._connect()
         self._own_number = self._check_own_number()
         self._store = GSMStore(self._own_number)
+        self._call_audio_processes = {}
         self._assemble_stored_received_sms_parts()
         self._clear_stale_phone_calls()
         self.check_network_coverage()
@@ -939,7 +950,80 @@ class GSMCenter:
         after = self._store.get_phone_call(mid)
         if after and (before is None or before.status is not after.status):
             self._run_call_hook(mid, self._call_hook_name(after.status))
+            self._sync_call_audio_process(after)
         return True
+
+    def _sync_call_audio_process(self, call: StoredPhoneCall):
+        if call.status is PhoneCallStatus.ANSWERED:
+            self._start_call_audio_process(call.id)
+        elif call.status in (PhoneCallStatus.ENDED, PhoneCallStatus.FAILED):
+            self._stop_call_audio_process(call.id)
+
+    def _start_call_audio_process(self, mid: int):
+        if not self._options.call_audio_command:
+            return
+        if mid in self._call_audio_processes:
+            return
+
+        event_time = int(time())
+        env = self._phone_call_hook_env(mid, event_time)
+        env.update({
+            str(k): str(v) for k, v in (self._options.call_audio_env or {}
+                                        ).items()
+        })
+        cmd = self._options.call_audio_command.format(**env)
+        argv = shlex.split(cmd)
+        self.logger.info(f'starting call audio command for call #{mid}: {cmd}')
+        try:
+            process = subprocess.Popen(
+                argv, env={**environ, **env}, start_new_session=True)
+        except Exception as e:
+            self.logger.error(
+                f'call audio command for call #{mid} failed due to {e!r}')
+            self._merge_phone_call_extra(
+                mid, call_audio_error=repr(e),
+                call_audio_started_at=event_time)
+            return
+
+        self._call_audio_processes[mid] = process
+        self._merge_phone_call_extra(
+            mid, call_audio_pid=process.pid,
+            call_audio_started_at=event_time,
+            call_audio_command=cmd)
+
+    def _stop_call_audio_process(self, mid: int):
+        process = self._call_audio_processes.pop(mid, None)
+        if process is None:
+            return
+
+        stopped_at = int(time())
+        if process.poll() is None:
+            self.logger.info(f'stopping call audio command for call #{mid}')
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.logger.warning(
+                    f'killing call audio command for call #{mid}')
+                process.kill()
+                process.wait(timeout=5)
+
+        self._merge_phone_call_extra(
+            mid, call_audio_stopped_at=stopped_at,
+            call_audio_return_code=process.returncode)
+
+    def _stop_all_call_audio_processes(self):
+        for mid in list(self._call_audio_processes):
+            self._stop_call_audio_process(mid)
+
+    def _merge_phone_call_extra(self, mid: int, **extra):
+        row = self._store.phone_call_db.get(mid)
+        if not row:
+            return
+        current = json_loads(row['extra']) if row.get('extra') else {}
+        current.update(extra)
+        self._store.phone_call_db.update_status(
+            mid, row['status'], extra=current)
 
     @staticmethod
     def _call_hook_name(status: PhoneCallStatus) -> str:
@@ -1245,6 +1329,7 @@ class GSMCenter:
         self.logger.info('closing...')
         self._is_alive = False
         self._loop_thread.join()
+        self._stop_all_call_audio_processes()
         self._modem.close()
 
     def restart(self):

@@ -78,6 +78,9 @@ DEVICES:
         answered:
           command: "./scripts/on-call-answered.sh"
           env: {}
+      audio:
+        command: "./scripts/call-audio-session.sh"
+        env: {}
 ```
 
 Legacy flat keys such as `sms_enabled`, `call_enabled`,

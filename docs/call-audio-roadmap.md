@@ -122,8 +122,8 @@ CALL_AUDIO_OUTPUT
 ## Managed Call Audio Command
 
 For live audio, event hooks are not enough because the process is long-lived.
-Add a managed command that starts when a call becomes `ANSWERED` and stops when
-the call reaches `ENDED` or `FAILED`:
+`calls.audio.command` starts when a call becomes `ANSWERED` and stops when the
+call reaches `ENDED` or `FAILED`:
 
 ```yaml
 DEVICES:
@@ -134,11 +134,11 @@ DEVICES:
         env: {}
 ```
 
-The command should receive call and audio environment variables and decide what
-to do. Examples include recording, bridging, playback, STT, TTS, or custom
+The command receives call and audio environment variables and decides what to
+do. Examples include recording, bridging, playback, STT, TTS, or custom
 operator workflows.
 
-gsm-center should track the child process and terminate it during:
+gsm-center tracks the child process and terminates it during:
 
 - call hangup,
 - remote call end,
@@ -309,10 +309,11 @@ This enables future integrations:
 
 ### Step 5: Add Managed Call Audio Command
 
-- Start `calls.audio.command` when a call is answered.
-- Stop it when the call ends or fails.
+- Start `calls.audio.command` when a call is answered. Implemented.
+- Stop it when the call ends or fails. Implemented.
 - Track PID/process state in memory and record metadata in DB `extra`.
-- Ensure loop shutdown cleans up child processes.
+  Implemented.
+- Ensure loop shutdown cleans up child processes. Implemented.
 
 ### Step 6: Add Call Recording
 
