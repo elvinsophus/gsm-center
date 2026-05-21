@@ -298,8 +298,13 @@ This enables future integrations:
 ### Step 4: Add Call Hooks
 
 - Add `on_call_dialing`, `on_call_answered`, `on_call_ended`, and
-  `on_call_failed` under `calls.hooks`.
-- Pass call and audio environment variables to every hook.
+  `on_call_failed` under `calls.hooks`. This is implemented for grouped
+  config and legacy flat keys.
+- Pass call and audio environment variables to every hook. Implemented hook
+  vars include `CALL_ID`, `CALL_DIRECTION`, `CALL_OWN_NUMBER`,
+  `CALL_OTHER_NUMBER`, `CALL_CALLER`, `CALL_RECIPIENT`, `CALL_STATUS`,
+  `CALL_STARTED_AT`, `CALL_ENDED_AT`, `CALL_AUDIO_DEVICE`,
+  `CALL_AUDIO_INPUT`, and `CALL_AUDIO_OUTPUT`.
 - Preserve `calls.hooks.received` as the notification point for incoming calls.
 
 ### Step 5: Add Managed Call Audio Command

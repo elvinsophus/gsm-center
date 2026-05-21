@@ -28,6 +28,9 @@ DEVICES:
         #received:
           #command:  # command to execute when call received (variables: CALL_ID, CALL_CALLER, CALL_RECIPIENT, CALL_TIMESTAMP, CALL_TIME_STR)
           #env:  # environment variables for call received command
+        #dialing:
+          #command:  # command to execute when an outgoing call starts dialing
+          #env:  # environment variables for call dialing command
         #answered:
           #command:  # command to execute when call is answered
           #env:  # environment variables for call answered command

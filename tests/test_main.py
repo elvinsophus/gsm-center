@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from app.main import (GSMCenter, GSMStore, ReceivedSMSPartInfo,
                       ReceivedSMSPartStatus, ReceivedSMSStatus)
@@ -49,6 +49,60 @@ class TestPhoneCallStartupCleanup:
         assert stale['ended_at'] is not None
         assert 'loop restarted' in stale['extra']
         assert finished['status'] == 'ENDED'
+
+
+class TestPhoneCallHooks:
+
+    def make_center(self):
+        center = object.__new__(GSMCenter)
+        center._options = GSMCenter.DeviceOptions(
+            call_enabled=True,
+            audio_device='gsm_usb',
+            on_call_answered='./answered {CALL_ID} {CALL_STATUS}',
+            on_call_answered_env={'CUSTOM': 'yes'})
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center.logger = Mock()
+        return center
+
+    def test_status_transition_runs_matching_hook(self, fresh_db):
+        center = self.make_center()
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'RINGING')
+        audio = GSMCenter.AudioDeviceOptions(
+            'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20)
+
+        with patch('app.main.AudioDeviceOptions.get', return_value=audio), \
+                patch('app.main.run_system_command') as run:
+            center._update_phone_call_status(
+                mid, GSMCenter.PhoneCallStatus.ANSWERED, started_at=1700000000)
+
+        assert run.call_count == 1
+        command = run.call_args.args[0]
+        env = run.call_args.kwargs['env']
+        assert command == f'./answered {mid} ANSWERED'
+        assert env['CALL_ID'] == str(mid)
+        assert env['CALL_DIRECTION'] == 'INCOMING'
+        assert env['CALL_OWN_NUMBER'] == OWN_NUMBER
+        assert env['CALL_OTHER_NUMBER'] == OTHER_NUMBER
+        assert env['CALL_CALLER'] == OTHER_NUMBER
+        assert env['CALL_RECIPIENT'] == OWN_NUMBER
+        assert env['CALL_STATUS'] == 'ANSWERED'
+        assert env['CALL_STARTED_AT'] == '1700000000'
+        assert env['CALL_AUDIO_DEVICE'] == 'gsm_usb'
+        assert env['CALL_AUDIO_INPUT'] == 'plughw:3,0'
+        assert env['CUSTOM'] == 'yes'
+
+    def test_same_status_update_does_not_rerun_hook(self, fresh_db):
+        center = self.make_center()
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'ANSWERED')
+
+        with patch('app.main.run_system_command') as run:
+            center._update_phone_call_status(
+                mid, GSMCenter.PhoneCallStatus.ANSWERED)
+
+        run.assert_not_called()
 
 
 class TestMultipartSMS:
@@ -113,3 +167,40 @@ class TestMultipartSMS:
     def test_parse_16_bit_concat_udh(self):
         assert GSMCenter._parse_concat_udh(bytes.fromhex('06080401020302')) == (
             '258', 3, 2)
+
+    def test_received_hook_uses_integer_timestamp_for_assembled_sms(
+            self, fresh_db):
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._options = GSMCenter.DeviceOptions(
+            sms_enabled=True,
+            on_sms_received='./sms {SMS_CONTENT} {SMS_TIMESTAMP}',
+        )
+        center.logger = Mock()
+
+        first = Mock()
+        first.number = OTHER_NUMBER
+        first.text = 'hello '
+        first.status = object()
+        first.time.timestamp.return_value = 1700000000
+        first.concat_reference = 'abc'
+        first.concat_total = 2
+        first.concat_sequence = 1
+
+        second = Mock()
+        second.number = OTHER_NUMBER
+        second.text = 'world'
+        second.status = object()
+        second.time.timestamp.return_value = 1700000001
+        second.concat_reference = 'abc'
+        second.concat_total = 2
+        second.concat_sequence = 2
+
+        with patch('app.main.run_system_command') as run:
+            center._handle_received_sms(first)
+            center._handle_received_sms(second)
+
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        assert command == './sms hello world 1700000000'

@@ -118,8 +118,8 @@ python manage.py test                              # Healthcheck (prints "Hello 
   and optionally runs an SMS hook once the complete message exists.
 - `_handle_incoming_call()` records inbound calls, keeps the live call object,
   and optionally runs a call hook.
-- `process_phone_call_requests()` dials queued calls and applies answer/hangup
-  requests in the modem-owning loop process.
+- `process_phone_call_requests()` dials queued calls, applies answer/hangup
+  requests in the modem-owning loop process, and emits lifecycle call hooks.
 
 **`GSMStore`** is the data access layer, queryable by `own_number`:
 
@@ -223,6 +223,18 @@ DEVICES:
         received:
           command: "./scripts/on-call-received.sh"
           env: {}
+        dialing:
+          command: "./scripts/on-call-dialing.sh"
+          env: {}
+        answered:
+          command: "./scripts/on-call-answered.sh"
+          env: {}
+        ended:
+          command: "./scripts/on-call-ended.sh"
+          env: {}
+        failed:
+          command: "./scripts/on-call-failed.sh"
+          env: {}
 ```
 
 Legacy flat keys are still supported:
@@ -234,6 +246,14 @@ on_sms_received:
 on_sms_received_env:
 on_call_received:
 on_call_received_env:
+on_call_dialing:
+on_call_dialing_env:
+on_call_answered:
+on_call_answered_env:
+on_call_ended:
+on_call_ended_env:
+on_call_failed:
+on_call_failed_env:
 ```
 
 Grouped config takes precedence when both forms are present.

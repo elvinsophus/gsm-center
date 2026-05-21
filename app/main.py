@@ -10,6 +10,7 @@ from sys import exc_info
 from traceback import format_tb
 from logging import getLogger
 from typing import NamedTuple
+from os import environ
 from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             IncomingCall, SentSms, ReceivedSms, StatusReport,
                             PinRequiredError, IncorrectPinError)
@@ -22,6 +23,7 @@ import phonenumbers
 
 SMSType = SmsDB.SMSType
 PhoneCallType = PhoneCallDB.PhoneCallType
+_EMPTY_ARG = object()
 
 
 class PendingSMSStatus(Enum):
@@ -390,6 +392,14 @@ class DeviceOptions(NamedTuple):
     on_sms_received_env: dict = None
     on_call_received: str = ''
     on_call_received_env: dict = None
+    on_call_dialing: str = ''
+    on_call_dialing_env: dict = None
+    on_call_answered: str = ''
+    on_call_answered_env: dict = None
+    on_call_ended: str = ''
+    on_call_ended_env: dict = None
+    on_call_failed: str = ''
+    on_call_failed_env: dict = None
 
     @classmethod
     def from_dict(cls, d: dict) -> 'DeviceOptions':
@@ -405,7 +415,6 @@ class DeviceOptions(NamedTuple):
         call_conf = _dict_or_empty(d.get('calls'))
         sms_received = _dict_or_empty(sms_conf.get('on_received'))
         call_hooks = _dict_or_empty(call_conf.get('hooks'))
-        call_received = _dict_or_empty(call_hooks.get('received'))
 
         if (sms_enabled := _first_defined(
                 sms_conf.get('enabled'), d.get('sms_enabled'))) is not None:
@@ -422,12 +431,14 @@ class DeviceOptions(NamedTuple):
         if on_sms_received_env := _first_truthy(
                 sms_received.get('env'), d.get('on_sms_received_env')):
             args['on_sms_received_env'] = on_sms_received_env
-        if on_call_received := _first_truthy(
-                call_received.get('command'), d.get('on_call_received')):
-            args['on_call_received'] = str(on_call_received)
-        if on_call_received_env := _first_truthy(
-                call_received.get('env'), d.get('on_call_received_env')):
-            args['on_call_received_env'] = on_call_received_env
+        for name in ('received', 'dialing', 'answered', 'ended', 'failed'):
+            hook = _dict_or_empty(call_hooks.get(name))
+            legacy_cmd = d.get(f'on_call_{name}')
+            legacy_env = d.get(f'on_call_{name}_env')
+            if cmd := _first_truthy(hook.get('command'), legacy_cmd):
+                args[f'on_call_{name}'] = str(cmd)
+            if env := _first_truthy(hook.get('env'), legacy_env):
+                args[f'on_call_{name}_env'] = env
         return cls(**args)
 
 
@@ -442,18 +453,21 @@ class AudioDeviceOptions(NamedTuple):
 
     @classmethod
     def from_dict(cls, name: str, d: dict) -> 'AudioDeviceOptions':
-        args = {'name': str(name)}
+        args: dict = {'name': str(name)}
         if input_ := d.get('input'):
             args['input'] = str(input_)
         if output := d.get('output'):
             args['output'] = str(output)
         if (sample_rate := d.get('sample_rate')) is not None:
+            sample_rate: int | str
             args['sample_rate'] = int(sample_rate)
         if (channels := d.get('channels')) is not None:
+            channels: int | str
             args['channels'] = int(channels)
         if format_ := d.get('format'):
             args['format'] = str(format_)
         if (frame_ms := d.get('frame_ms')) is not None:
+            frame_ms: int | str
             args['frame_ms'] = int(frame_ms)
         return cls(**args)
 
@@ -519,6 +533,7 @@ def _first_int_attr(attrs: dict, names: tuple[str, ...]) -> int | None:
     if value is None:
         return None
     try:
+        # noinspection PyTypeChecker
         return int(value)
     except (TypeError, ValueError):
         return None
@@ -742,16 +757,10 @@ class GSMCenter:
         mid = self._store.phone_call_db.insert(
             PhoneCallType.INCOMING, self._own_number, sender,
             PhoneCallStatus.RINGING)
+        if mid is None:
+            raise RuntimeError('incoming call could not be inserted into DB')
         self._active_calls[mid] = call
-        options = self._options
-        if cmd := options.on_call_received:
-            run_system_command(cmd.format(
-                CALL_ID=mid,
-                CALL_CALLER=sender,
-                CALL_RECIPIENT=self._own_number,
-                CALL_TIMESTAMP=int(time()),
-                CALL_TIME_STR=timestamp_to_datetime(time())
-            ), env=options.on_call_received_env)
+        self._run_call_hook(mid, 'received')
 
     def _clear_stale_phone_calls(self):
         if not self._options.call_enabled:
@@ -798,6 +807,7 @@ class GSMCenter:
             statuses.DIALING)
         if mid is None:
             raise RuntimeError('phone call could not be inserted into DB')
+        self._run_call_hook(mid, 'dialing')
 
         logger.info(f'making phone call #{mid} to {recipient!r}...')
         try:
@@ -809,14 +819,14 @@ class GSMCenter:
                     self._call_status_callback(mid)))
         except Exception as e:
             logger.error(f'phone call #{mid} failed due to {e!r}')
-            call_db.update_status(
+            self._update_phone_call_status(
                 mid, statuses.FAILED, ended_at=int(time()),
                 extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
         else:
             self._active_calls[mid] = call
             status = statuses.ANSWERED if getattr(call, 'answered', False) \
                 else statuses.DIALING
-            call_db.update_status(
+            self._update_phone_call_status(
                 mid, status,
                 started_at=(int(time()) if status is statuses.ANSWERED
                             else None))
@@ -827,10 +837,10 @@ class GSMCenter:
         def callback(call):
             self.logger.info(f'phone call #{mid} status updated: {call}')
             if getattr(call, 'answered', False):
-                self._store.phone_call_db.update_status(
+                self._update_phone_call_status(
                     mid, PhoneCallStatus.ANSWERED, started_at=int(time()))
             if not getattr(call, 'active', True):
-                self._store.phone_call_db.update_status(
+                self._update_phone_call_status(
                     mid, PhoneCallStatus.ENDED, ended_at=int(time()))
                 self._active_calls.pop(mid, None)
         return callback
@@ -847,7 +857,7 @@ class GSMCenter:
                 PhoneCallType.OUTGOING, self._own_number,
                 status=statuses.CREATED, limit=10):
             mid = row['id']
-            if not db.update_status(
+            if not self._update_phone_call_status(
                     mid, statuses.DIALING, from_status=statuses.CREATED):
                 continue
             try:
@@ -857,12 +867,11 @@ class GSMCenter:
                         self._call_status_callback(mid)))
             except Exception as e:
                 logger.error(f'phone call #{mid} failed due to {e!r}')
-                db.update_status(
+                self._update_phone_call_status(
                     mid, statuses.FAILED, ended_at=int(time()),
                     extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
             else:
                 self._active_calls[mid] = call
-                db.update_status(mid, statuses.DIALING)
 
         for row in db.list(
                 own_number=self._own_number,
@@ -877,37 +886,119 @@ class GSMCenter:
     def _answer_phone_call(self, mid: int):
         statuses = PhoneCallStatus
         if not (call := self._active_calls.get(mid)):
-            self._store.phone_call_db.update_status(
+            self._update_phone_call_status(
                 mid, statuses.FAILED, ended_at=int(time()),
                 extra=dict(error='live call is not available'))
             return
         try:
             call.answer()
         except Exception as e:
-            self._store.phone_call_db.update_status(
+            self._update_phone_call_status(
                 mid, statuses.FAILED, ended_at=int(time()),
                 extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
         else:
-            self._store.phone_call_db.update_status(
+            self._update_phone_call_status(
                 mid, statuses.ANSWERED, started_at=int(time()))
 
     def _hangup_phone_call(self, mid: int):
         statuses = PhoneCallStatus
         if not (call := self._active_calls.get(mid)):
-            self._store.phone_call_db.update_status(
+            self._update_phone_call_status(
                 mid, statuses.ENDED, ended_at=int(time()),
                 extra=dict(error='live call is not available'))
             return
         try:
             call.hangup()
         except Exception as e:
-            self._store.phone_call_db.update_status(
+            self._update_phone_call_status(
                 mid, statuses.FAILED, ended_at=int(time()),
                 extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
         else:
             self._active_calls.pop(mid, None)
-            self._store.phone_call_db.update_status(
+            self._update_phone_call_status(
                 mid, statuses.ENDED, ended_at=int(time()))
+
+    def _update_phone_call_status(
+            self, mid: int, status: PhoneCallStatus, *,
+            from_status: PhoneCallStatus | None = None,
+            started_at=_EMPTY_ARG, ended_at=_EMPTY_ARG, extra=_EMPTY_ARG
+                                  ) -> bool:
+        before = self._store.get_phone_call(mid)
+        kwargs = {}
+        if started_at is not _EMPTY_ARG:
+            kwargs['started_at'] = started_at
+        if ended_at is not _EMPTY_ARG:
+            kwargs['ended_at'] = ended_at
+        if extra is not _EMPTY_ARG:
+            kwargs['extra'] = extra
+        if not self._store.phone_call_db.update_status(
+                mid, status, from_status=from_status,
+                **kwargs):
+            return False
+
+        after = self._store.get_phone_call(mid)
+        if after and (before is None or before.status is not after.status):
+            self._run_call_hook(mid, self._call_hook_name(after.status))
+        return True
+
+    @staticmethod
+    def _call_hook_name(status: PhoneCallStatus) -> str:
+        return {
+            PhoneCallStatus.RINGING: 'received',
+            PhoneCallStatus.DIALING: 'dialing',
+            PhoneCallStatus.ANSWERED: 'answered',
+            PhoneCallStatus.ENDED: 'ended',
+            PhoneCallStatus.FAILED: 'failed',
+        }.get(status, '')
+
+    def _run_call_hook(self, mid: int, hook_name: str):
+        if not hook_name:
+            return
+        cmd, configured_env = self._call_hook_config(hook_name)
+        if not cmd:
+            return
+        event_time = int(time())
+        hook_env = self._phone_call_hook_env(mid, event_time)
+        hook_env.update({
+            str(k): str(v) for k, v in (configured_env or {}).items()
+        })
+        run_system_command(
+            cmd.format(**hook_env), env={**environ, **hook_env})
+
+    def _call_hook_config(self, hook_name: str) -> tuple[str, dict | None]:
+        options = self._options
+        return (
+            getattr(options, f'on_call_{hook_name}', ''),
+            getattr(options, f'on_call_{hook_name}_env', None),
+        )
+
+    def _phone_call_hook_env(self, mid: int, event_time: int) -> dict[str, str]:
+        call = self._store.get_phone_call(mid)
+        audio = (AudioDeviceOptions.get(self._options.audio_device)
+                 if self._options.audio_device else None)
+        values = {
+            'CALL_ID': mid,
+            'CALL_DIRECTION': call.type.name if call else '',
+            'CALL_OWN_NUMBER': call.own_number if call else self._own_number,
+            'CALL_OTHER_NUMBER': call.other_number if call else '',
+            'CALL_CALLER': call.caller if call else '',
+            'CALL_RECIPIENT': call.recipient if call else '',
+            'CALL_STATUS': call.status.name if call else '',
+            'CALL_TIMESTAMP': event_time,
+            'CALL_TIME_STR': timestamp_to_datetime(event_time),
+            'CALL_STARTED_AT': int(call.started_at.timestamp())
+            if call and call.started_at else '',
+            'CALL_ENDED_AT': int(call.ended_at.timestamp())
+            if call and call.ended_at else '',
+            'CALL_AUDIO_DEVICE': audio.name if audio else '',
+            'CALL_AUDIO_INPUT': audio.input if audio else '',
+            'CALL_AUDIO_OUTPUT': audio.output if audio else '',
+            'CALL_AUDIO_SAMPLE_RATE': audio.sample_rate if audio else '',
+            'CALL_AUDIO_CHANNELS': audio.channels if audio else '',
+            'CALL_AUDIO_FORMAT': audio.format if audio else '',
+            'CALL_AUDIO_FRAME_MS': audio.frame_ms if audio else '',
+        }
+        return {k: str(v) for k, v in values.items()}
 
     def _handle_received_sms(self, sms: ReceivedSms):
         sender = self.normalise_number(sms.number)
@@ -927,7 +1018,7 @@ class GSMCenter:
             return
         if stored_sms := self._store.get_received_sms(mid):
             content = stored_sms.content
-            at = stored_sms.time or at
+            at = int(sms_t.timestamp()) if (sms_t := stored_sms.time) else at
         options = self._options
         if cmd := options.on_sms_received:
             run_system_command(cmd.format(

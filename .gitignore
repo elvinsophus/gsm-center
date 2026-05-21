@@ -133,3 +133,6 @@ dmypy.json
 
 # Configurations
 config.yaml
+
+# Local machine-specific helper scripts
+local-tools/

@@ -75,6 +75,9 @@ DEVICES:
         received:
           command: "./scripts/on-call.sh"
           env: {}
+        answered:
+          command: "./scripts/on-call-answered.sh"
+          env: {}
 ```
 
 Legacy flat keys such as `sms_enabled`, `call_enabled`,
