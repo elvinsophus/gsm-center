@@ -117,6 +117,7 @@ class TestManagedCallAudio:
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
         center._call_audio_processes = {}
+        center._call_recording_processes = {}
         center.logger = Mock()
         return center
 
@@ -172,6 +173,72 @@ class TestManagedCallAudio:
         center._stop_all_call_audio_processes()
 
         assert center._call_audio_processes == {}
+
+
+class TestCallRecording:
+
+    def make_center(self, tmp_path):
+        center = object.__new__(GSMCenter)
+        center._options = GSMCenter.DeviceOptions(
+            call_enabled=True,
+            audio_device='gsm_usb',
+            call_recording_enabled=True,
+            call_recording_directory=str(tmp_path),
+            call_recording_command='./record {CALL_RECORDING_FILE}',
+            call_recording_env={'MODE': 'record'},
+            call_recording_format='wav')
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._call_audio_processes = {}
+        center._call_recording_processes = {}
+        center.logger = Mock()
+        return center
+
+    def test_answered_call_starts_recording_process(self, fresh_db, tmp_path):
+        center = self.make_center(tmp_path)
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'RINGING')
+        process = Mock()
+        process.pid = 4321
+
+        with patch('app.main.subprocess.Popen',
+                   return_value=process) as popen:
+            center._update_phone_call_status(
+                mid, GSMCenter.PhoneCallStatus.ANSWERED, started_at=1700000000)
+
+        recordings = center._store.list_phone_call_recordings(mid)
+        assert len(recordings) == 1
+        recording = recordings[0]
+        assert recording.status is GSMCenter.PhoneCallRecordingStatus.RECORDING
+        assert recording.path.endswith('.wav')
+        assert center._call_recording_processes[mid][0] == recording.id
+        assert center._call_recording_processes[mid][1] is process
+        popen.assert_called_once()
+        assert popen.call_args.args[0][0] == './record'
+        assert popen.call_args.kwargs['env']['MODE'] == 'record'
+        assert popen.call_args.kwargs['env']['CALL_RECORDING_ID'] == str(
+            recording.id)
+
+    def test_terminal_call_completes_recording(self, fresh_db, tmp_path):
+        center = self.make_center(tmp_path)
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'ANSWERED')
+        rid = GSMStore.phone_call_recording_db.insert(
+            mid, str(tmp_path / 'call.wav'), 'wav',
+            GSMCenter.PhoneCallRecordingStatus.RECORDING,
+            started_at=1700000000)
+        process = Mock()
+        process.poll.return_value = None
+        process.returncode = 0
+        center._call_recording_processes[mid] = (rid, process)
+
+        center._update_phone_call_status(
+            mid, GSMCenter.PhoneCallStatus.ENDED, ended_at=1700000060)
+
+        process.terminate.assert_called_once()
+        recording = center._store.get_phone_call_recording(rid)
+        assert recording.status is GSMCenter.PhoneCallRecordingStatus.COMPLETED
+        assert recording.extra['return_code'] == 0
 
 
 class TestMultipartSMS:

@@ -292,6 +292,38 @@ class TestGetCalls:
 
         assert resp.status_code == 404
 
+    def test_list_call_recordings_returns_recording_json(self, client):
+        from app.main import GSMCenter, GSMStore
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', '+8613500000001', '+8613500000002', 'ANSWERED')
+        rid = GSMStore.phone_call_recording_db.insert(
+            mid, 'recordings/call.wav', 'wav',
+            GSMCenter.PhoneCallRecordingStatus.RECORDING,
+            started_at=1700000000)
+
+        resp = client.get(f'/calls/{mid}/recordings')
+
+        assert resp.status_code == 200
+        assert resp.json[0]['id'] == rid
+        assert resp.json[0]['call_id'] == mid
+        assert resp.json[0]['path'] == 'recordings/call.wav'
+        assert resp.json[0]['status'] == 'RECORDING'
+
+    def test_list_call_recordings_missing_call_returns_404(self, client):
+        resp = client.get('/calls/9999/recordings')
+
+        assert resp.status_code == 404
+
+    def test_list_call_recordings_invalid_status_returns_400(self, client):
+        from app.main import GSMStore
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', '+8613500000001', '+8613500000002', 'ANSWERED')
+
+        resp = client.get(
+            f'/calls/{mid}/recordings', query_string={'status': 'NOPE'})
+
+        assert resp.status_code == 400
+
 
 class TestPostCallActions:
 

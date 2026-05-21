@@ -161,6 +161,7 @@ DEVICES:
         enabled: yes
         directory: "recordings"
         command: "./scripts/record-call.sh"
+        format: wav
         env: {}
 ```
 
@@ -209,7 +210,11 @@ POST /calls/<id>/answer
 POST /calls/<id>/hangup
 ```
 
-Add call recording inspection later with `GET /calls/<id>/recordings`.
+Call recording inspection:
+
+```text
+GET /calls/<id>/recordings
+```
 
 Add audio device inspection:
 
@@ -317,11 +322,13 @@ This enables future integrations:
 
 ### Step 6: Add Call Recording
 
-- Add recording DB table.
-- Add recording config.
-- Start recording through a generic command or managed recorder.
-- Store recording path, status, timestamps, and errors.
-- Add APIs to list recordings for a call.
+- Add recording DB table. Implemented as `phone_call_recording`.
+- Add recording config. Implemented under `calls.recording`.
+- Start recording through a generic command or managed recorder. Implemented
+  through `calls.recording.command`.
+- Store recording path, status, timestamps, and errors. Implemented.
+- Add APIs to list recordings for a call. Implemented as
+  `GET /calls/<id>/recordings`.
 
 ### Step 7: Add WebSocket Audio Streams
 

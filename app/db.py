@@ -590,3 +590,86 @@ class PhoneCallDB(BaseDB):
             f"delete from `{self.name}` where `id` = ?",
             [id_]
         ).rowcount)
+
+
+class PhoneCallRecordingDB(BaseDB):
+
+    schema = '''
+        `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+        `created_at` INTEGER NOT NULL,
+        `updated_at` INTEGER NOT NULL,
+        `call_id` INTEGER NOT NULL,
+        `started_at` INTEGER,
+        `ended_at` INTEGER,
+        `path` TEXT NOT NULL,
+        `format` TEXT NOT NULL,
+        `status` TEXT NOT NULL,
+        `extra` TEXT
+    '''
+    indices = {
+        'phone_call_recording_call_idx': ('call_id', 'id ASC'),
+        'phone_call_recording_status_idx': ('call_id', 'status', 'id ASC'),
+    }
+
+    def insert(self, call_id: int, path: str, format_: str,
+               status: str | Enum, *,
+               started_at: int | None = None,
+               extra: dict | None = None) -> int | None:
+        extra_json = compact_json_dumps(extra) if extra is not None else None
+        t = int(time())
+        return self._execute(
+            f"insert into `{self.name}` "
+            f"(`created_at`, `updated_at`, `call_id`, `started_at`, "
+            f"`path`, `format`, `status`, `extra`) "
+            f"values (?, ?, ?, ?, ?, ?, ?, ?)",
+            [t, t, call_id, started_at, path, format_, _enum_name(status),
+             extra_json]
+        ).lastrowid
+
+    def get(self, id_: int) -> dict | None:
+        cursor = self._execute(
+            f"select * from `{self.name}` where `id` = ?",
+            [id_]
+        )
+        if not (row := cursor.fetchone()):
+            return None
+        cols = [c[0] for c in cursor.description]
+        return dict(zip(cols, row))
+
+    def list(self, call_id: int, *,
+             status: str | Enum | None = None,
+             limit: int = 10) -> list[dict]:
+        where = {'call_id': call_id}
+        if status is not None:
+            where['status'] = _enum_name(status)
+        cursor = self._execute(
+            f"select * from `{self.name}` "
+            f"where {' and '.join(f'`{w}` = ?' for w in where)} "
+            f"order by `id` desc limit ?",
+            [*where.values(), limit]
+        )
+        cols = [c[0] for c in cursor.description]
+        return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    def update_status(self, id_: int, status: str | Enum, *,
+                      started_at: int | None | _Empty = _EMPTY,
+                      ended_at: int | None | _Empty = _EMPTY,
+                      extra: dict | None | _Empty = _EMPTY) -> bool:
+        values: dict[str, Any] = {
+            'status': _enum_name(status),
+            'updated_at': int(time()),
+        }
+        if started_at is not _EMPTY:
+            values['started_at'] = started_at
+        if ended_at is not _EMPTY:
+            values['ended_at'] = ended_at
+        if extra is not _EMPTY:
+            if extra is not None:
+                extra = compact_json_dumps(extra)
+            values['extra'] = extra
+        return bool(self._execute(
+            f"update `{self.name}` "
+            f"set {', '.join(f'`{k}` = ?' for k in values)} "
+            f"where `id` = ?",
+            [*values.values(), id_]
+        ).rowcount)

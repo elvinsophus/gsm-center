@@ -11,6 +11,7 @@ from traceback import format_tb
 from logging import getLogger
 from typing import NamedTuple
 from os import environ
+from pathlib import Path
 import shlex
 import subprocess
 from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
@@ -18,7 +19,7 @@ from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             PinRequiredError, IncorrectPinError)
 from .config import config
 from .db import (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
-                 PhoneCallDB)
+                 PhoneCallDB, PhoneCallRecordingDB)
 from .utils import timestamp_to_datetime, safe, run_system_command
 import phonenumbers
 
@@ -60,6 +61,13 @@ class PhoneCallStatus(Enum):
     HANGUP_REQUESTED = 5
     ENDED = 6
     FAILED = 7
+
+
+class PhoneCallRecordingStatus(Enum):
+    CREATED = 0
+    RECORDING = 1
+    COMPLETED = 2
+    FAILED = 3
 
 
 class PendingSMS(NamedTuple):
@@ -122,6 +130,18 @@ class StoredPhoneCall(NamedTuple):
                 else self.other_number)
 
 
+class StoredPhoneCallRecording(NamedTuple):
+    id: int
+    call_id: int
+    time: datetime
+    started_at: datetime | None
+    ended_at: datetime | None
+    path: str
+    format: str
+    status: PhoneCallRecordingStatus
+    extra: dict | None
+
+
 class GSMStore:
 
     sim_card_db = SIMCardDB()
@@ -129,6 +149,7 @@ class GSMStore:
     sms_db = SmsDB()
     received_sms_part_db = ReceivedSMSPartDB()
     phone_call_db = PhoneCallDB()
+    phone_call_recording_db = PhoneCallRecordingDB()
 
     def __init__(self, own_number: str):
         if own_number:
@@ -301,6 +322,23 @@ class GSMStore:
             return None
         return self.phone_call_from_db(row)
 
+    def get_phone_call_recording(self, mid: int
+                                 ) -> StoredPhoneCallRecording | None:
+        if not (row := self.phone_call_recording_db.get(mid)):
+            return None
+        return self.phone_call_recording_from_db(row)
+
+    def list_phone_call_recordings(self, call_id: int, *,
+                                   status: PhoneCallRecordingStatus | None
+                                   = None,
+                                   limit: int = 10
+                                   ) -> list[StoredPhoneCallRecording]:
+        return list(map(
+            self.phone_call_recording_from_db,
+            self.phone_call_recording_db.list(
+                call_id, status=status, limit=limit)
+        ))
+
     def list_phone_calls(self,
                          type_: PhoneCallType | None = None, *,
                          other_number: str = '',
@@ -326,6 +364,20 @@ class GSMStore:
             getattr(PhoneCallStatus, row['status']),
             (timestamp_to_datetime(started_at) if started_at else None),
             (timestamp_to_datetime(ended_at) if ended_at else None),
+            (json_loads(extra) if (extra := row['extra']) else None)
+        )
+
+    @classmethod
+    def phone_call_recording_from_db(
+            cls, row: dict) -> StoredPhoneCallRecording:
+        started_at = row['started_at']
+        ended_at = row['ended_at']
+        return StoredPhoneCallRecording(
+            row['id'], row['call_id'], timestamp_to_datetime(row['created_at']),
+            (timestamp_to_datetime(started_at) if started_at else None),
+            (timestamp_to_datetime(ended_at) if ended_at else None),
+            row['path'], row['format'],
+            getattr(PhoneCallRecordingStatus, row['status']),
             (json_loads(extra) if (extra := row['extra']) else None)
         )
 
@@ -404,6 +456,11 @@ class DeviceOptions(NamedTuple):
     on_call_failed_env: dict = None
     call_audio_command: str = ''
     call_audio_env: dict = None
+    call_recording_enabled: bool = False
+    call_recording_directory: str = ''
+    call_recording_command: str = ''
+    call_recording_env: dict = None
+    call_recording_format: str = 'wav'
 
     @classmethod
     def from_dict(cls, d: dict) -> 'DeviceOptions':
@@ -420,6 +477,7 @@ class DeviceOptions(NamedTuple):
         sms_received = _dict_or_empty(sms_conf.get('on_received'))
         call_hooks = _dict_or_empty(call_conf.get('hooks'))
         call_audio = _dict_or_empty(call_conf.get('audio'))
+        call_recording = _dict_or_empty(call_conf.get('recording'))
 
         if (sms_enabled := _first_defined(
                 sms_conf.get('enabled'), d.get('sms_enabled'))) is not None:
@@ -448,6 +506,17 @@ class DeviceOptions(NamedTuple):
             args['call_audio_command'] = str(call_audio_command)
         if call_audio_env := _first_truthy(call_audio.get('env')):
             args['call_audio_env'] = call_audio_env
+        if (recording_enabled := call_recording.get('enabled')) is not None:
+            args['call_recording_enabled'] = bool(recording_enabled)
+        if recording_directory := _first_truthy(
+                call_recording.get('directory')):
+            args['call_recording_directory'] = str(recording_directory)
+        if recording_command := _first_truthy(call_recording.get('command')):
+            args['call_recording_command'] = str(recording_command)
+        if recording_env := _first_truthy(call_recording.get('env')):
+            args['call_recording_env'] = recording_env
+        if recording_format := _first_truthy(call_recording.get('format')):
+            args['call_recording_format'] = str(recording_format)
         return cls(**args)
 
 
@@ -579,6 +648,8 @@ class GSMCenter:
     PhoneCallType = PhoneCallType
     StoredPhoneCall = StoredPhoneCall
     PhoneCallStatus = PhoneCallStatus
+    StoredPhoneCallRecording = StoredPhoneCallRecording
+    PhoneCallRecordingStatus = PhoneCallRecordingStatus
     DeviceOptions = DeviceOptions
     AudioDeviceOptions = AudioDeviceOptions
 
@@ -607,6 +678,7 @@ class GSMCenter:
         self._is_alive = True
         self._active_calls = {}
         self._call_audio_processes = {}
+        self._call_recording_processes = {}
 
         self._connect()
         self._own_number = self._check_own_number()
@@ -636,6 +708,7 @@ class GSMCenter:
         self._own_number = self._check_own_number()
         self._store = GSMStore(self._own_number)
         self._call_audio_processes = {}
+        self._call_recording_processes = {}
         self._assemble_stored_received_sms_parts()
         self._clear_stale_phone_calls()
         self.check_network_coverage()
@@ -956,8 +1029,11 @@ class GSMCenter:
     def _sync_call_audio_process(self, call: StoredPhoneCall):
         if call.status is PhoneCallStatus.ANSWERED:
             self._start_call_audio_process(call.id)
+            self._start_call_recording_process(call.id)
         elif call.status in (PhoneCallStatus.ENDED, PhoneCallStatus.FAILED):
             self._stop_call_audio_process(call.id)
+            self._stop_call_recording_process(
+                call.id, failed=(call.status is PhoneCallStatus.FAILED))
 
     def _start_call_audio_process(self, mid: int):
         if not self._options.call_audio_command:
@@ -1015,6 +1091,94 @@ class GSMCenter:
     def _stop_all_call_audio_processes(self):
         for mid in list(self._call_audio_processes):
             self._stop_call_audio_process(mid)
+
+    def _start_call_recording_process(self, mid: int):
+        options = self._options
+        if not options.call_recording_enabled:
+            return
+        if not options.call_recording_command:
+            return
+        if not hasattr(self, '_call_recording_processes'):
+            self._call_recording_processes = {}
+        if mid in self._call_recording_processes:
+            return
+
+        started_at = int(time())
+        format_ = options.call_recording_format
+        path = self._call_recording_path(mid, started_at, format_)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rid = self._store.phone_call_recording_db.insert(
+            mid, str(path), format_, PhoneCallRecordingStatus.CREATED,
+            started_at=started_at)
+        if rid is None:
+            raise RuntimeError('call recording could not be inserted into DB')
+
+        env = self._phone_call_hook_env(mid, started_at)
+        env.update({
+            'CALL_RECORDING_ID': str(rid),
+            'CALL_RECORDING_FILE': str(path),
+            'CALL_RECORDING_FORMAT': format_,
+        })
+        env.update({
+            str(k): str(v) for k, v in (options.call_recording_env or {}
+                                        ).items()
+        })
+        cmd = options.call_recording_command.format(**env)
+        argv = shlex.split(cmd)
+        self.logger.info(
+            f'starting call recording command for call #{mid}: {cmd}')
+        try:
+            process = subprocess.Popen(
+                argv, env={**environ, **env}, start_new_session=True)
+        except Exception as e:
+            self.logger.error(
+                f'call recording command for call #{mid} failed due to {e!r}')
+            self._store.phone_call_recording_db.update_status(
+                rid, PhoneCallRecordingStatus.FAILED,
+                ended_at=int(time()), extra={'error': repr(e), 'command': cmd})
+            return
+
+        self._call_recording_processes[mid] = (rid, process)
+        self._store.phone_call_recording_db.update_status(
+            rid, PhoneCallRecordingStatus.RECORDING,
+            extra={'pid': process.pid, 'command': cmd})
+
+    def _stop_call_recording_process(self, mid: int, *, failed: bool = False):
+        if not hasattr(self, '_call_recording_processes'):
+            self._call_recording_processes = {}
+        entry = self._call_recording_processes.pop(mid, None)
+        if entry is None:
+            return
+        rid, process = entry
+        stopped_at = int(time())
+        if process.poll() is None:
+            self.logger.info(f'stopping call recording command for call #{mid}')
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.logger.warning(
+                    f'killing call recording command for call #{mid}')
+                process.kill()
+                process.wait(timeout=5)
+
+        status = (PhoneCallRecordingStatus.FAILED if failed
+                  else PhoneCallRecordingStatus.COMPLETED)
+        row = self._store.phone_call_recording_db.get(rid)
+        extra = json_loads(row['extra']) if row and row.get('extra') else {}
+        extra['return_code'] = process.returncode
+        self._store.phone_call_recording_db.update_status(
+            rid, status, ended_at=stopped_at, extra=extra)
+
+    def _stop_all_call_recording_processes(self):
+        for mid in list(self._call_recording_processes):
+            self._stop_call_recording_process(mid, failed=True)
+
+    def _call_recording_path(self, mid: int, started_at: int,
+                             format_: str) -> Path:
+        directory = self._options.call_recording_directory or 'recordings'
+        suffix = format_.lstrip('.') or 'wav'
+        return Path(directory) / f'call-{mid}-{started_at}.{suffix}'
 
     def _merge_phone_call_extra(self, mid: int, **extra):
         row = self._store.phone_call_db.get(mid)
@@ -1330,6 +1494,7 @@ class GSMCenter:
         self._is_alive = False
         self._loop_thread.join()
         self._stop_all_call_audio_processes()
+        self._stop_all_call_recording_processes()
         self._modem.close()
 
     def restart(self):

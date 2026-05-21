@@ -28,6 +28,7 @@ POST /audio/devices/<name>/test-play
 POST /sms
 GET  /calls
 GET  /calls/<id>
+GET  /calls/<id>/recordings
 POST /calls
 POST /calls/<id>/answer
 POST /calls/<id>/hangup
@@ -80,6 +81,12 @@ DEVICES:
           env: {}
       audio:
         command: "./scripts/call-audio-session.sh"
+        env: {}
+      recording:
+        enabled: yes
+        directory: "recordings"
+        command: "./scripts/record-call.sh"
+        format: wav
         env: {}
 ```
 

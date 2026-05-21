@@ -92,6 +92,7 @@ python manage.py test                              # Healthcheck (prints "Hello 
 | `POST` | `/sms` | Queue SMS: `{"sender": "+...", "recipient": "+...", "content": "..."}` |
 | `GET` | `/calls` | List phone calls, optionally filtered by `own_number`, `other_number`, `type`, `status`, `limit` |
 | `GET` | `/calls/<id>` | Get phone call detail |
+| `GET` | `/calls/<id>/recordings` | List recording metadata for a call |
 | `POST` | `/calls` | Queue outgoing call: `{"caller": "+...", "recipient": "+..."}` |
 | `POST` | `/calls/<id>/answer` | Queue answer request for a ringing incoming call |
 | `POST` | `/calls/<id>/hangup` | Queue hangup request for a non-terminal call |
@@ -238,6 +239,12 @@ DEVICES:
       audio:
         command: "./scripts/call-audio-session.sh"
         env: {}
+      recording:
+        enabled: yes
+        directory: "recordings"
+        command: "./scripts/record-call.sh"
+        format: wav
+        env: {}
 ```
 
 Legacy flat keys are still supported:
@@ -273,8 +280,8 @@ Keep audio generic:
 - Hooks and managed commands decide behavior. `calls.audio.command` starts
   when a call becomes `ANSWERED` and is stopped on `ENDED`/`FAILED` or loop
   shutdown.
-- Recording should be modeled as a media session with metadata, not as fixed
-  built-in call behavior.
+- Recording is modeled as a managed media session with metadata in
+  `phone_call_recording`, not as fixed built-in call behavior.
 
 ## SMS Multipart Notes
 

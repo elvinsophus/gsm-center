@@ -4,8 +4,9 @@ from flask import Flask, Blueprint, request, jsonify
 from subprocess import CalledProcessError, TimeoutExpired
 from .audio import (AudioCommandResult, play_audio_sample,
                     record_audio_sample)
-from .main import (AudioDeviceOptions, GSMStore, PhoneCallStatus,
-                   PhoneCallType, StoredPhoneCall)
+from .main import (AudioDeviceOptions, GSMStore, PhoneCallRecordingStatus,
+                   PhoneCallStatus, PhoneCallType, StoredPhoneCall,
+                   StoredPhoneCallRecording)
 
 
 bp = Blueprint('index', __name__)
@@ -140,6 +141,23 @@ def get_call(call_id):
     return jsonify(_phone_call_to_json(call))
 
 
+@bp.route('/calls/<int:call_id>/recordings', methods=['GET'])
+def list_call_recordings(call_id):
+    try:
+        if not GSMStore('').get_phone_call(call_id):
+            return f'call #{call_id} not found', 404
+        limit = int(request.args.get('limit', 10))
+        status = _enum_arg(
+            PhoneCallRecordingStatus, request.args.get('status'))
+        recordings = GSMStore('').list_phone_call_recordings(
+            call_id, status=status, limit=limit)
+    except ValueError as e:
+        return str(e), 400
+    except Exception as e:
+        return str(e), 500
+    return jsonify([_phone_call_recording_to_json(r) for r in recordings])
+
+
 @bp.route('/calls/<int:call_id>/answer', methods=['POST'])
 def answer_call(call_id):
     try:
@@ -207,6 +225,20 @@ def _phone_call_to_json(call: StoredPhoneCall) -> dict:
         started_at=_datetime_to_timestamp(call.started_at),
         ended_at=_datetime_to_timestamp(call.ended_at),
         extra=call.extra,
+    )
+
+
+def _phone_call_recording_to_json(recording: StoredPhoneCallRecording) -> dict:
+    return dict(
+        id=recording.id,
+        call_id=recording.call_id,
+        time=_datetime_to_timestamp(recording.time),
+        started_at=_datetime_to_timestamp(recording.started_at),
+        ended_at=_datetime_to_timestamp(recording.ended_at),
+        path=recording.path,
+        format=recording.format,
+        status=recording.status.name,
+        extra=recording.extra,
     )
 
 

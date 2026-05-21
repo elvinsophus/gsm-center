@@ -47,6 +47,7 @@ DEVICES:
         #enabled:  # whether recording is enabled, e.g. yes
         #directory:  # where recordings should be stored, e.g. recordings
         #command:  # optional managed recording command
+        #format:  # recording file extension/format, e.g. wav
         #env:  # environment variables for recording command
 
     # Legacy flat keys are still supported:

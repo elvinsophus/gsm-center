@@ -5,12 +5,13 @@ import pytest
 from enum import Enum
 
 from app.db import (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
-                    PhoneCallDB)
+                    PhoneCallDB, PhoneCallRecordingDB)
 
 SENT = SmsDB.SMSType.SENT
 RECEIVED = SmsDB.SMSType.RECEIVED
 OUTGOING = PhoneCallDB.PhoneCallType.OUTGOING
 INCOMING = PhoneCallDB.PhoneCallType.INCOMING
+RECORDING = 'RECORDING'
 OWN_NUMBER = '+12025550111'
 OTHER_NUMBER = '+12025550122'
 THIRD_NUMBER = '+12025550133'
@@ -41,6 +42,11 @@ def received_sms_part_db(fresh_db):
 @pytest.fixture
 def phone_call_db(fresh_db):
     return PhoneCallDB()
+
+
+@pytest.fixture
+def phone_call_recording_db(fresh_db):
+    return PhoneCallRecordingDB()
 
 
 # ── SIMCardDB ─────────────────────────────────────────────────────────────────
@@ -416,3 +422,41 @@ class TestPhoneCallDB:
         assert row['started_at'] == 1700000000
         assert row['ended_at'] == 1700000060
         assert json.loads(row['extra']) == {'reason': 'busy'}
+
+
+class TestPhoneCallRecordingDB:
+
+    def test_insert_and_get(self, phone_call_recording_db):
+        mid = phone_call_recording_db.insert(
+            42, 'recordings/call.wav', 'wav', RECORDING,
+            started_at=1700000000, extra={'pid': 123})
+
+        row = phone_call_recording_db.get(mid)
+
+        assert row['call_id'] == 42
+        assert row['path'] == 'recordings/call.wav'
+        assert row['format'] == 'wav'
+        assert row['status'] == RECORDING
+        assert row['started_at'] == 1700000000
+        assert json.loads(row['extra']) == {'pid': 123}
+
+    def test_list_by_call(self, phone_call_recording_db):
+        phone_call_recording_db.insert(1, 'a.wav', 'wav', RECORDING)
+        phone_call_recording_db.insert(2, 'b.wav', 'wav', RECORDING)
+
+        rows = phone_call_recording_db.list(1)
+
+        assert len(rows) == 1
+        assert rows[0]['path'] == 'a.wav'
+
+    def test_update_status(self, phone_call_recording_db):
+        mid = phone_call_recording_db.insert(1, 'a.wav', 'wav', RECORDING)
+
+        assert phone_call_recording_db.update_status(
+            mid, 'COMPLETED', ended_at=1700000060,
+            extra={'return_code': 0}) is True
+
+        row = phone_call_recording_db.get(mid)
+        assert row['status'] == 'COMPLETED'
+        assert row['ended_at'] == 1700000060
+        assert json.loads(row['extra']) == {'return_code': 0}
