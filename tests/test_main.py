@@ -186,7 +186,7 @@ class TestCallRecording:
             call_recording_directory=str(tmp_path),
             call_recording_command='./record {CALL_RECORDING_FILE}',
             call_recording_env={'MODE': 'record'},
-            call_recording_format='wav')
+            call_recording_format='mp3')
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
         center._call_audio_processes = {}
@@ -210,7 +210,7 @@ class TestCallRecording:
         assert len(recordings) == 1
         recording = recordings[0]
         assert recording.status is GSMCenter.PhoneCallRecordingStatus.RECORDING
-        assert recording.path.endswith('.wav')
+        assert recording.path.endswith('.mp3')
         assert center._call_recording_processes[mid][0] == recording.id
         assert center._call_recording_processes[mid][1] is process
         popen.assert_called_once()

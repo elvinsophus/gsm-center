@@ -47,7 +47,7 @@ class TestDeviceOptions:
                     'directory': 'recordings',
                     'command': './record-call.sh',
                     'env': {'E': '5'},
-                    'format': 'wav',
+                    'format': 'mp3',
                 },
                 'hooks': {
                     'received': {
@@ -89,7 +89,7 @@ class TestDeviceOptions:
         assert options.call_recording_directory == 'recordings'
         assert options.call_recording_command == './record-call.sh'
         assert options.call_recording_env == {'E': '5'}
-        assert options.call_recording_format == 'wav'
+        assert options.call_recording_format == 'mp3'
 
     def test_grouped_options_take_precedence_over_legacy_options(self):
         options = GSMCenter.DeviceOptions.from_dict({

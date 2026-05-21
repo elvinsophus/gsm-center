@@ -242,8 +242,8 @@ DEVICES:
       recording:
         enabled: yes
         directory: "recordings"
-        command: "./scripts/record-call.sh"
-        format: wav
+        command: "ffmpeg -y -f alsa -ac 1 -ar 8000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
+        format: mp3
         env: {}
 ```
 

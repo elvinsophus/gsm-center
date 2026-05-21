@@ -460,7 +460,7 @@ class DeviceOptions(NamedTuple):
     call_recording_directory: str = ''
     call_recording_command: str = ''
     call_recording_env: dict = None
-    call_recording_format: str = 'wav'
+    call_recording_format: str = 'mp3'
 
     @classmethod
     def from_dict(cls, d: dict) -> 'DeviceOptions':

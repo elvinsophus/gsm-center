@@ -160,18 +160,20 @@ DEVICES:
       recording:
         enabled: yes
         directory: "recordings"
-        command: "./scripts/record-call.sh"
-        format: wav
+        command: "ffmpeg -y -f alsa -ac 1 -ar 8000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
+        format: mp3
         env: {}
 ```
 
 The recording command can use ALSA, ffmpeg, arecord, sox, or another tool. A
-simple first implementation could record the capture side:
+compact, broadly compatible default records the capture side as mono MP3:
 
 ```bash
-arecord -D "$CALL_AUDIO_INPUT" -f S16_LE -r "$CALL_AUDIO_SAMPLE_RATE" \
-  -c "$CALL_AUDIO_CHANNELS" "$CALL_RECORDING_FILE"
+ffmpeg -y -f alsa -ac 1 -ar 8000 -i "$CALL_AUDIO_INPUT" \
+  -codec:a libmp3lame -b:a 32k "$CALL_RECORDING_FILE"
 ```
+
+At 32 kbps mono, recording size is roughly 240 KB per minute.
 
 Later, duplex recording can be added by recording both capture and playback
 streams and muxing them into one file.
