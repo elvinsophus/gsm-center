@@ -59,7 +59,7 @@ pytest
 ```
 
 The suite covers DB helpers, REST API behavior, utility functions, config
-normalization, and call restart/request edge cases.
+normalization, multipart SMS assembly, and call restart/request edge cases.
 
 ## CLI Commands
 
@@ -110,7 +110,8 @@ python manage.py test                              # Healthcheck (prints "Hello 
 - Every 300s checks network coverage and modem-stored SMS messages.
 - `send_sms()` sends via modem and records to `SmsDB`.
 - `process_pending_smss()` picks up CREATED pending SMS and advances status.
-- `_handle_received_sms()` stores inbound SMS and optionally runs an SMS hook.
+- `_handle_received_sms()` stores inbound SMS, assembles multipart messages,
+  and optionally runs an SMS hook once the complete message exists.
 - `_handle_incoming_call()` records inbound calls, keeps the live call object,
   and optionally runs a call hook.
 - `process_phone_call_requests()` dials queued calls and applies answer/hangup
@@ -119,6 +120,8 @@ python manage.py test                              # Healthcheck (prints "Hello 
 **`GSMStore`** is the data access layer, queryable by `own_number`:
 
 - `add_pending_sms()` queues outgoing SMS.
+- `add_received_sms()` stores inbound SMS. Multipart SMS parts go through
+  `received_sms_part` first and are promoted to `sms` only when complete.
 - `add_phone_call()` queues outgoing phone calls.
 - `request_phone_call_answer()` and `request_phone_call_hangup()` queue call
   actions.
@@ -133,6 +136,8 @@ SQLite tables use a thread-local connection wrapper:
   `call_enabled`, `sms_enabled`, `updated_at`)
 - **`pending_sms`** - outgoing SMS queue (`CREATED -> PENDING -> PROCESSED`)
 - **`sms`** - sent/received SMS history
+- **`received_sms_part`** - persisted multipart inbound SMS parts, used to
+  assemble complete messages across out-of-order delivery and loop restarts
 - **`phone_call`** - outgoing/incoming call history and request queue
 
 ## Flow
@@ -142,8 +147,17 @@ SQLite tables use a thread-local connection wrapper:
 Incoming:
 
 ```text
+Single-part:
 Modem callback -> _handle_received_sms() -> sms table -> optional hook
+
+Multipart:
+Modem callback -> received_sms_part -> wait for all parts -> sms table -> optional hook
 ```
+
+Multipart parts are keyed by own number, sender, concatenation reference, and
+part sequence. Because parts are written to SQLite before assembly, receiving
+part 1 before a restart and part 2 after the restart still produces one final
+received SMS. The SMS hook is not run for individual parts.
 
 Outgoing:
 
@@ -232,6 +246,10 @@ Keep audio generic:
 - Hooks and managed commands decide behavior.
 - Recording should be modeled as a media session with metadata, not as fixed
   built-in call behavior.
+
+## SMS Multipart Notes
+
+Multipart inbound SMS behavior is documented in `docs/multipart-sms.md`.
 
 ## Key Implementation Notes
 

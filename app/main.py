@@ -14,7 +14,8 @@ from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             IncomingCall, SentSms, ReceivedSms, StatusReport,
                             PinRequiredError, IncorrectPinError)
 from .config import config
-from .db import SIMCardDB, PendingSMSDB, SmsDB, PhoneCallDB
+from .db import (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
+                 PhoneCallDB)
 from .utils import timestamp_to_datetime, safe, run_system_command
 import phonenumbers
 
@@ -39,6 +40,11 @@ class SentSMSStatus(Enum):
 class ReceivedSMSStatus(Enum):
     UNREAD = 0
     READ = 1
+
+
+class ReceivedSMSPartStatus(Enum):
+    RECEIVED = 0
+    ASSEMBLED = 1
 
 
 class PhoneCallStatus(Enum):
@@ -81,6 +87,15 @@ class StoredSMS(NamedTuple):
                 else self.other_number)
 
 
+class ReceivedSMSPartInfo(NamedTuple):
+    reference: str
+    total: int
+    sequence: int
+    raw_pdu: str | None = None
+    encoding: str | None = None
+    extra: dict | None = None
+
+
 class StoredPhoneCall(NamedTuple):
     id: int
     type: PhoneCallType
@@ -108,6 +123,7 @@ class GSMStore:
     sim_card_db = SIMCardDB()
     pending_sms_db = PendingSMSDB()
     sms_db = SmsDB()
+    received_sms_part_db = ReceivedSMSPartDB()
     phone_call_db = PhoneCallDB()
 
     def __init__(self, own_number: str):
@@ -217,6 +233,64 @@ class GSMStore:
                 other_number=GSMCenter.normalise_number(other_number),
                 limit=limit)
         ))
+
+    def add_received_sms(self, sender: str, content: str,
+                         status: ReceivedSMSStatus, time_: int,
+                         part_info: ReceivedSMSPartInfo | None = None
+                         ) -> int | None:
+        if part_info is None:
+            return self.sms_db.insert(
+                SMSType.RECEIVED, self._own_number, sender, content, status,
+                time_)
+
+        self.received_sms_part_db.insert(
+            self._own_number, sender, content,
+            part_info.reference, part_info.total, part_info.sequence,
+            ReceivedSMSPartStatus.RECEIVED, time_=time_,
+            raw_pdu=part_info.raw_pdu, encoding=part_info.encoding,
+            extra=part_info.extra)
+        return self._assemble_received_sms_parts(
+            sender, part_info.reference, status)
+
+    def assemble_all_received_sms_parts(self) -> int:
+        count = 0
+        for group in self.received_sms_part_db.list_unassembled_groups():
+            if group['own_number'] != self._own_number:
+                continue
+            if self._assemble_received_sms_parts(
+                    group['other_number'], group['concat_reference'],
+                    ReceivedSMSStatus.UNREAD) is not None:
+                count += 1
+        return count
+
+    def _assemble_received_sms_parts(self, sender: str, reference: str,
+                                     status: ReceivedSMSStatus
+                                     ) -> int | None:
+        part_db = self.received_sms_part_db
+        parts = part_db.list_group(
+            self._own_number, sender, reference,
+            status=ReceivedSMSPartStatus.RECEIVED)
+        if not parts:
+            return None
+
+        total = parts[0]['concat_total']
+        sequences = {p['concat_sequence'] for p in parts}
+        if len(parts) < total or sequences != set(range(1, total + 1)):
+            return None
+
+        content = ''.join(
+            p['content'] for p in sorted(parts, key=lambda p: p[
+                'concat_sequence']))
+        timestamp = min((p['time'] for p in parts if p['time']), default=None)
+        mid = self.sms_db.insert(
+            SMSType.RECEIVED, self._own_number, sender, content, status,
+            timestamp)
+        if mid is None:
+            raise RuntimeError('assembled SMS could not be inserted into DB')
+        part_db.mark_group_assembled(
+            self._own_number, sender, reference, mid,
+            ReceivedSMSPartStatus.ASSEMBLED)
+        return mid
 
     def get_phone_call(self, mid: int) -> StoredPhoneCall | None:
         if not (row := self.phone_call_db.get(mid)):
@@ -414,6 +488,59 @@ def _first_truthy(*values):
     return None
 
 
+def _sms_attrs(sms) -> dict:
+    attrs = {}
+    try:
+        attrs.update(vars(sms))
+    except TypeError:
+        pass
+    for name in dir(sms):
+        if name.startswith('_') or name in attrs:
+            continue
+        try:
+            value = getattr(sms, name)
+        except Exception:
+            continue
+        if callable(value):
+            continue
+        attrs[name] = value
+    return attrs
+
+
+def _first_attr(attrs: dict, names: tuple[str, ...]):
+    for name in names:
+        if (value := attrs.get(name)) is not None:
+            return value
+    return None
+
+
+def _first_int_attr(attrs: dict, names: tuple[str, ...]) -> int | None:
+    value = _first_attr(attrs, names)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bytes_from_udh(udh) -> bytes:
+    if isinstance(udh, bytes):
+        return udh
+    if isinstance(udh, bytearray):
+        return bytes(udh)
+    if isinstance(udh, str):
+        text = udh.replace(' ', '')
+        try:
+            return bytes.fromhex(text)
+        except ValueError:
+            return b''
+    try:
+        return bytes(udh)
+    except (TypeError, ValueError):
+        return b''
+
+
 class GSMCenter:
 
     SMSType = SMSType
@@ -423,6 +550,8 @@ class GSMCenter:
     StoredSMS = StoredSMS
     SentSMSStatus = SentSMSStatus
     ReceivedSMSStatus = ReceivedSMSStatus
+    ReceivedSMSPartInfo = ReceivedSMSPartInfo
+    ReceivedSMSPartStatus = ReceivedSMSPartStatus
     PhoneCallType = PhoneCallType
     StoredPhoneCall = StoredPhoneCall
     PhoneCallStatus = PhoneCallStatus
@@ -457,6 +586,7 @@ class GSMCenter:
         self._connect()
         self._own_number = self._check_own_number()
         self._store = GSMStore(self._own_number)
+        self._assemble_stored_received_sms_parts()
         self._clear_stale_phone_calls()
         self.check_network_coverage()
         self._check_modem_stored_smss()
@@ -480,6 +610,7 @@ class GSMCenter:
         self._connect()
         self._own_number = self._check_own_number()
         self._store = GSMStore(self._own_number)
+        self._assemble_stored_received_sms_parts()
         self._clear_stale_phone_calls()
         self.check_network_coverage()
         self._check_modem_stored_smss()
@@ -596,6 +727,14 @@ class GSMCenter:
             return
         self.logger.info(f'processing SMSs stored in MODEM...')
         self._modem.processStoredSms()
+
+    def _assemble_stored_received_sms_parts(self):
+        if not self._options.sms_enabled:
+            return
+        count = self._store.assemble_all_received_sms_parts()
+        if count:
+            self.logger.info(
+                f'assembled {count} stored multipart SMS message(s)')
 
     def _handle_incoming_call(self, call: IncomingCall):
         sender = self.normalise_number(call.number)
@@ -775,16 +914,20 @@ class GSMCenter:
         content = sms.text
         self.logger.info(
             f'received a new SMS from {sender!r}, length={len(content)}')
-        self._store.sms_db.insert(
-            SMSType.RECEIVED,
-            (recipient := self._own_number),
-            sender,
-            content,
-            (ReceivedSMSStatus.READ
-             if sms.status == ReceivedSms.STATUS_RECEIVED_READ
-             else ReceivedSMSStatus.UNREAD),
-            (at := int(sms.time.timestamp()))
-        )
+        recipient = self._own_number
+        status = (ReceivedSMSStatus.READ
+                  if sms.status == ReceivedSms.STATUS_RECEIVED_READ
+                  else ReceivedSMSStatus.UNREAD)
+        at = int(sms.time.timestamp())
+        mid = self._store.add_received_sms(
+            sender, content, status, at, self._extract_sms_part_info(sms))
+        if mid is None:
+            self.logger.info(
+                f'received multipart SMS part from {sender!r}; awaiting more')
+            return
+        if stored_sms := self._store.get_received_sms(mid):
+            content = stored_sms.content
+            at = stored_sms.time or at
         options = self._options
         if cmd := options.on_sms_received:
             run_system_command(cmd.format(
@@ -794,6 +937,70 @@ class GSMCenter:
                 SMS_TIMESTAMP=at,
                 SMS_TIME_STR=timestamp_to_datetime(at)
             ), env=options.on_sms_received_env)
+
+    def _extract_sms_part_info(self, sms: ReceivedSms
+                               ) -> ReceivedSMSPartInfo | None:
+        if udh := self._extract_sms_udh(sms):
+            return udh
+
+        attrs = _sms_attrs(sms)
+        total = _first_int_attr(attrs, (
+            'concat_total', 'concatTotal', 'total_parts', 'totalParts',
+            'number_of_parts', 'numberOfParts'))
+        sequence = _first_int_attr(attrs, (
+            'concat_sequence', 'concatSequence', 'part_number', 'partNumber',
+            'sequence'))
+        reference = _first_attr(attrs, (
+            'concat_reference', 'concatReference', 'multipart_reference',
+            'multipartReference'))
+        if reference is None or total is None or sequence is None:
+            return None
+        if total <= 1:
+            return None
+        return ReceivedSMSPartInfo(
+            str(reference), total, sequence,
+            _first_attr(attrs, ('pdu', 'raw_pdu', 'rawPdu')),
+            _first_attr(attrs, ('encoding', 'smsEncoding')),
+            {'source': 'attributes'})
+
+    @classmethod
+    def _extract_sms_udh(cls, sms: ReceivedSms) -> ReceivedSMSPartInfo | None:
+        attrs = _sms_attrs(sms)
+        udh = _first_attr(attrs, (
+            'udh', 'user_data_header', 'userDataHeader',
+            'userDataHeaderBytes'))
+        if udh is None:
+            return None
+        if (concat := cls._parse_concat_udh(udh)) is None:
+            return None
+        reference, total, sequence = concat
+        return ReceivedSMSPartInfo(
+            reference, total, sequence,
+            _first_attr(attrs, ('pdu', 'raw_pdu', 'rawPdu')),
+            _first_attr(attrs, ('encoding', 'smsEncoding')),
+            {'source': 'udh'})
+
+    @staticmethod
+    def _parse_concat_udh(udh) -> tuple[str, int, int] | None:
+        data = _bytes_from_udh(udh)
+        if not data:
+            return None
+        if len(data) >= 2 and data[0] == len(data) - 1:
+            data = data[1:data[0] + 1]
+
+        i = 0
+        while i + 1 < len(data):
+            iei = data[i]
+            length = data[i + 1]
+            value = data[i + 2:i + 2 + length]
+            if len(value) != length:
+                return None
+            if iei == 0x00 and length == 3:
+                return str(value[0]), value[1], value[2]
+            if iei == 0x08 and length == 4:
+                return str((value[0] << 8) | value[1]), value[2], value[3]
+            i += 2 + length
+        return None
 
     def _handle_status_report(self, report: StatusReport | ReceivedSms):
         self.logger.info(f'received a new status report {report}')

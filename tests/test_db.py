@@ -4,12 +4,16 @@ import json
 import pytest
 from enum import Enum
 
-from app.db import SIMCardDB, PendingSMSDB, SmsDB, PhoneCallDB
+from app.db import (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
+                    PhoneCallDB)
 
 SENT = SmsDB.SMSType.SENT
 RECEIVED = SmsDB.SMSType.RECEIVED
 OUTGOING = PhoneCallDB.PhoneCallType.OUTGOING
 INCOMING = PhoneCallDB.PhoneCallType.INCOMING
+OWN_NUMBER = '+12025550111'
+OTHER_NUMBER = '+12025550122'
+THIRD_NUMBER = '+12025550133'
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -27,6 +31,11 @@ def pending_db(fresh_db):
 @pytest.fixture
 def sms_db(fresh_db):
     return SmsDB()
+
+
+@pytest.fixture
+def received_sms_part_db(fresh_db):
+    return ReceivedSMSPartDB()
 
 
 @pytest.fixture
@@ -100,11 +109,11 @@ class TestSIMCardDB:
 class TestPendingSMSDB:
 
     def test_insert_and_get(self, pending_db):
-        mid = pending_db.insert('+1111', '+2222', 'hello', 'CREATED')
+        mid = pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'hello', 'CREATED')
         row = pending_db.get(mid)
         assert row is not None
-        assert row['sender'] == '+1111'
-        assert row['recipient'] == '+2222'
+        assert row['sender'] == OWN_NUMBER
+        assert row['recipient'] == OTHER_NUMBER
         assert row['content'] == 'hello'
         assert row['status'] == 'CREATED'
         assert row['sent_sms_id'] is None
@@ -112,44 +121,44 @@ class TestPendingSMSDB:
     def test_insert_with_enum_status(self, pending_db):
         class S(Enum):
             CREATED = 0
-        mid = pending_db.insert('+1111', '+2222', 'hi', S.CREATED)
+        mid = pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'hi', S.CREATED)
         assert pending_db.get(mid)['status'] == 'CREATED'
 
     def test_get_nonexistent_returns_none(self, pending_db):
         assert pending_db.get(9999) is None
 
     def test_list_by_sender(self, pending_db):
-        pending_db.insert('+1111', '+2222', 'a', 'CREATED')
-        pending_db.insert('+3333', '+2222', 'b', 'CREATED')
-        rows = pending_db.list('+1111')
+        pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'a', 'CREATED')
+        pending_db.insert(THIRD_NUMBER, OTHER_NUMBER, 'b', 'CREATED')
+        rows = pending_db.list(OWN_NUMBER)
         assert len(rows) == 1
         assert rows[0]['content'] == 'a'
 
     def test_list_filter_by_status(self, pending_db):
-        pending_db.insert('+1111', '+2222', 'a', 'CREATED')
-        pending_db.insert('+1111', '+2222', 'b', 'PENDING')
-        assert len(pending_db.list('+1111', status='CREATED')) == 1
-        assert len(pending_db.list('+1111', status='PENDING')) == 1
+        pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'a', 'CREATED')
+        pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'b', 'PENDING')
+        assert len(pending_db.list(OWN_NUMBER, status='CREATED')) == 1
+        assert len(pending_db.list(OWN_NUMBER, status='PENDING')) == 1
 
     def test_list_limit(self, pending_db):
         for i in range(5):
-            pending_db.insert('+1111', '+2222', f'msg{i}', 'CREATED')
-        assert len(pending_db.list('+1111', limit=3)) == 3
+            pending_db.insert(OWN_NUMBER, OTHER_NUMBER, f'msg{i}', 'CREATED')
+        assert len(pending_db.list(OWN_NUMBER, limit=3)) == 3
 
     def test_process_advances_status(self, pending_db):
-        mid = pending_db.insert('+1111', '+2222', 'hi', 'CREATED')
+        mid = pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'hi', 'CREATED')
         result = pending_db.process(mid, 'CREATED', 'PENDING')
         assert result is not None
         assert result['status'] == 'PENDING'
 
     def test_process_wrong_from_status_returns_none(self, pending_db):
-        mid = pending_db.insert('+1111', '+2222', 'hi', 'CREATED')
+        mid = pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'hi', 'CREATED')
         result = pending_db.process(mid, 'PENDING', 'PROCESSED')
         assert result is None
         assert pending_db.get(mid)['status'] == 'CREATED'
 
     def test_process_sets_sent_sms_id(self, pending_db):
-        mid = pending_db.insert('+1111', '+2222', 'hi', 'CREATED')
+        mid = pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'hi', 'CREATED')
         pending_db.process(mid, 'CREATED', 'PENDING', sent_sms_id=42)
         assert pending_db.get(mid)['sent_sms_id'] == 42
 
@@ -157,12 +166,12 @@ class TestPendingSMSDB:
         class S(Enum):
             CREATED = 0
             PENDING = 1
-        mid = pending_db.insert('+1111', '+2222', 'hi', 'CREATED')
+        mid = pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'hi', 'CREATED')
         result = pending_db.process(mid, S.CREATED, S.PENDING)
         assert result['status'] == 'PENDING'
 
     def test_delete(self, pending_db):
-        mid = pending_db.insert('+1111', '+2222', 'hi', 'CREATED')
+        mid = pending_db.insert(OWN_NUMBER, OTHER_NUMBER, 'hi', 'CREATED')
         assert pending_db.delete(mid) is True
         assert pending_db.get(mid) is None
 
@@ -175,51 +184,51 @@ class TestPendingSMSDB:
 class TestSmsDB:
 
     def test_insert_and_get(self, sms_db):
-        mid = sms_db.insert(SENT, '+1111', '+2222', 'hello', 'PENDING')
+        mid = sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'hello', 'PENDING')
         row = sms_db.get(mid)
         assert row is not None
         assert row['type'] == 'SENT'
-        assert row['own_number'] == '+1111'
-        assert row['other_number'] == '+2222'
+        assert row['own_number'] == OWN_NUMBER
+        assert row['other_number'] == OTHER_NUMBER
         assert row['content'] == 'hello'
         assert row['status'] == 'PENDING'
         assert row['delivery_report'] is None
 
     def test_insert_with_enum_type_and_status(self, sms_db):
-        mid = sms_db.insert(RECEIVED, '+1111', '+3333', 'hi', 'UNREAD')
+        mid = sms_db.insert(RECEIVED, OWN_NUMBER, THIRD_NUMBER, 'hi', 'UNREAD')
         assert sms_db.get(mid)['type'] == 'RECEIVED'
         assert sms_db.get(mid)['status'] == 'UNREAD'
 
     def test_insert_with_timestamp(self, sms_db):
-        mid = sms_db.insert(RECEIVED, '+1111', '+2222', 'hi', 'UNREAD', time_=1700000000)
+        mid = sms_db.insert(RECEIVED, OWN_NUMBER, OTHER_NUMBER, 'hi', 'UNREAD', time_=1700000000)
         assert sms_db.get(mid)['time'] == 1700000000
 
     def test_get_nonexistent_returns_none(self, sms_db):
         assert sms_db.get(9999) is None
 
     def test_list_by_type(self, sms_db):
-        sms_db.insert(SENT, '+1111', '+2222', 'sent', 'SENT')
-        sms_db.insert(RECEIVED, '+1111', '+3333', 'rcvd', 'UNREAD')
-        rows = sms_db.list(SENT, '+1111')
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'sent', 'SENT')
+        sms_db.insert(RECEIVED, OWN_NUMBER, THIRD_NUMBER, 'rcvd', 'UNREAD')
+        rows = sms_db.list(SENT, OWN_NUMBER)
         assert len(rows) == 1
         assert rows[0]['type'] == 'SENT'
 
     def test_list_all_types(self, sms_db):
-        sms_db.insert(SENT, '+1111', '+2222', 'a', 'SENT')
-        sms_db.insert(RECEIVED, '+1111', '+3333', 'b', 'UNREAD')
-        assert len(sms_db.list(own_number='+1111')) == 2
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'a', 'SENT')
+        sms_db.insert(RECEIVED, OWN_NUMBER, THIRD_NUMBER, 'b', 'UNREAD')
+        assert len(sms_db.list(own_number=OWN_NUMBER)) == 2
 
     def test_list_by_other_number(self, sms_db):
-        sms_db.insert(SENT, '+1111', '+2222', 'a', 'SENT')
-        sms_db.insert(SENT, '+1111', '+3333', 'b', 'SENT')
-        rows = sms_db.list(SENT, '+1111', other_number='+2222')
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'a', 'SENT')
+        sms_db.insert(SENT, OWN_NUMBER, THIRD_NUMBER, 'b', 'SENT')
+        rows = sms_db.list(SENT, OWN_NUMBER, other_number=OTHER_NUMBER)
         assert len(rows) == 1
         assert rows[0]['content'] == 'a'
 
     def test_list_by_status(self, sms_db):
-        sms_db.insert(SENT, '+1111', '+2222', 'a', 'SENT')
-        sms_db.insert(SENT, '+1111', '+2222', 'b', 'FAILED')
-        rows = sms_db.list(SENT, '+1111', status='FAILED')
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'a', 'SENT')
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'b', 'FAILED')
+        rows = sms_db.list(SENT, OWN_NUMBER, status='FAILED')
         assert len(rows) == 1
         assert rows[0]['content'] == 'b'
 
@@ -229,21 +238,21 @@ class TestSmsDB:
 
     def test_list_other_number_requires_own_number(self, sms_db):
         with pytest.raises(ValueError, match='`own_number`'):
-            sms_db.list(other_number='+2222')
+            sms_db.list(other_number=OTHER_NUMBER)
 
     def test_list_limit(self, sms_db):
         for i in range(5):
-            sms_db.insert(SENT, '+1111', '+2222', f'msg{i}', 'SENT')
-        assert len(sms_db.list(SENT, '+1111', limit=3)) == 3
+            sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, f'msg{i}', 'SENT')
+        assert len(sms_db.list(SENT, OWN_NUMBER, limit=3)) == 3
 
     def test_list_ordered_newest_first(self, sms_db):
-        sms_db.insert(SENT, '+1111', '+2222', 'first', 'SENT')
-        sms_db.insert(SENT, '+1111', '+2222', 'second', 'SENT')
-        rows = sms_db.list(SENT, '+1111')
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'first', 'SENT')
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'second', 'SENT')
+        rows = sms_db.list(SENT, OWN_NUMBER)
         assert rows[0]['content'] == 'second'
 
     def test_update_status(self, sms_db):
-        mid = sms_db.insert(SENT, '+1111', '+2222', 'hi', 'PENDING')
+        mid = sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'hi', 'PENDING')
         assert sms_db.update_status(mid, 'SENT') is True
         assert sms_db.get(mid)['status'] == 'SENT'
 
@@ -251,53 +260,53 @@ class TestSmsDB:
         assert sms_db.update_status(9999, 'SENT') is False
 
     def test_update_status_sets_delivery_report(self, sms_db):
-        mid = sms_db.insert(SENT, '+1111', '+2222', 'hi', 'PENDING')
+        mid = sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'hi', 'PENDING')
         sms_db.update_status(mid, 'DELIVERED', delivery_report={'code': 0})
         row = sms_db.get(mid)
         assert json.loads(row['delivery_report']) == {'code': 0}
 
     def test_update_status_delivery_report_none_stored(self, sms_db):
-        mid = sms_db.insert(SENT, '+1111', '+2222', 'hi', 'PENDING')
+        mid = sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'hi', 'PENDING')
         sms_db.update_status(mid, 'SENT', delivery_report=None)
         assert sms_db.get(mid)['delivery_report'] is None
 
     def test_update_status_without_delivery_report_leaves_it_unchanged(self, sms_db):
-        mid = sms_db.insert(SENT, '+1111', '+2222', 'hi', 'PENDING')
+        mid = sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'hi', 'PENDING')
         sms_db.update_status(mid, 'SENT')
         assert sms_db.get(mid)['delivery_report'] is None
 
     def test_batch_update_status(self, sms_db):
-        sms_db.insert(RECEIVED, '+1111', '+2222', 'a', 'UNREAD')
-        sms_db.insert(RECEIVED, '+1111', '+2222', 'b', 'UNREAD')
+        sms_db.insert(RECEIVED, OWN_NUMBER, OTHER_NUMBER, 'a', 'UNREAD')
+        sms_db.insert(RECEIVED, OWN_NUMBER, OTHER_NUMBER, 'b', 'UNREAD')
         count = sms_db.batch_update_status(RECEIVED, 'READ', 'UNREAD')
         assert count == 2
         assert all(r['status'] == 'READ'
-                   for r in sms_db.list(RECEIVED, '+1111'))
+                   for r in sms_db.list(RECEIVED, OWN_NUMBER))
 
     def test_batch_update_status_respects_from_status(self, sms_db):
-        sms_db.insert(RECEIVED, '+1111', '+2222', 'a', 'UNREAD')
-        sms_db.insert(RECEIVED, '+1111', '+2222', 'b', 'READ')
+        sms_db.insert(RECEIVED, OWN_NUMBER, OTHER_NUMBER, 'a', 'UNREAD')
+        sms_db.insert(RECEIVED, OWN_NUMBER, OTHER_NUMBER, 'b', 'READ')
         count = sms_db.batch_update_status(RECEIVED, 'READ', 'UNREAD')
         assert count == 1
 
     def test_batch_update_without_from_status(self, sms_db):
-        sms_db.insert(RECEIVED, '+1111', '+2222', 'a', 'UNREAD')
-        sms_db.insert(RECEIVED, '+1111', '+2222', 'b', 'READ')
+        sms_db.insert(RECEIVED, OWN_NUMBER, OTHER_NUMBER, 'a', 'UNREAD')
+        sms_db.insert(RECEIVED, OWN_NUMBER, OTHER_NUMBER, 'b', 'READ')
         count = sms_db.batch_update_status(RECEIVED, 'READ')
         assert count == 2
 
     def test_list_last_of_each_returns_latest_per_conversation(self, sms_db):
-        sms_db.insert(SENT, '+1111', '+2222', 'first', 'SENT')
-        sms_db.insert(SENT, '+1111', '+2222', 'second', 'SENT')
-        sms_db.insert(RECEIVED, '+1111', '+3333', 'hi', 'UNREAD')
-        rows = sms_db.list_last_of_each('+1111')
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'first', 'SENT')
+        sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'second', 'SENT')
+        sms_db.insert(RECEIVED, OWN_NUMBER, THIRD_NUMBER, 'hi', 'UNREAD')
+        rows = sms_db.list_last_of_each(OWN_NUMBER)
         assert len(rows) == 2
-        conv_2222 = next(r for r in rows if r['other_number'] == '+2222')
+        conv_2222 = next(r for r in rows if r['other_number'] == OTHER_NUMBER)
         assert conv_2222['content'] == 'second'
         assert conv_2222['id_count'] == 2
 
     def test_delete(self, sms_db):
-        mid = sms_db.insert(SENT, '+1111', '+2222', 'hi', 'SENT')
+        mid = sms_db.insert(SENT, OWN_NUMBER, OTHER_NUMBER, 'hi', 'SENT')
         assert sms_db.delete(mid) is True
         assert sms_db.get(mid) is None
 
@@ -305,15 +314,70 @@ class TestSmsDB:
         assert sms_db.delete(9999) is False
 
 
+class TestReceivedSMSPartDB:
+
+    def test_insert_and_get_by_key(self, received_sms_part_db):
+        mid = received_sms_part_db.insert(
+            OWN_NUMBER, OTHER_NUMBER, 'hello ', 'abc', 2, 1, 'RECEIVED',
+            time_=1700000000, raw_pdu='00', encoding='GSM7',
+            extra={'source': 'test'})
+
+        row = received_sms_part_db.get_by_key(OWN_NUMBER, OTHER_NUMBER, 'abc', 1)
+        assert row['id'] == mid
+        assert row['content'] == 'hello '
+        assert row['concat_total'] == 2
+        assert row['concat_sequence'] == 1
+        assert row['time'] == 1700000000
+        assert row['raw_pdu'] == '00'
+        assert row['encoding'] == 'GSM7'
+        assert row['status'] == 'RECEIVED'
+        assert json.loads(row['extra']) == {'source': 'test'}
+
+    def test_insert_duplicate_is_idempotent(self, received_sms_part_db):
+        first = received_sms_part_db.insert(
+            OWN_NUMBER, OTHER_NUMBER, 'hello ', 'abc', 2, 1, 'RECEIVED')
+        second = received_sms_part_db.insert(
+            OWN_NUMBER, OTHER_NUMBER, 'hello again ', 'abc', 2, 1, 'RECEIVED')
+
+        rows = received_sms_part_db.list_group(OWN_NUMBER, OTHER_NUMBER, 'abc')
+        assert first == second
+        assert len(rows) == 1
+        assert rows[0]['content'] == 'hello '
+
+    def test_list_group_orders_by_sequence(self, received_sms_part_db):
+        received_sms_part_db.insert(
+            OWN_NUMBER, OTHER_NUMBER, 'world', 'abc', 2, 2, 'RECEIVED')
+        received_sms_part_db.insert(
+            OWN_NUMBER, OTHER_NUMBER, 'hello ', 'abc', 2, 1, 'RECEIVED')
+
+        rows = received_sms_part_db.list_group(OWN_NUMBER, OTHER_NUMBER, 'abc')
+
+        assert [r['concat_sequence'] for r in rows] == [1, 2]
+
+    def test_mark_group_assembled(self, received_sms_part_db):
+        received_sms_part_db.insert(
+            OWN_NUMBER, OTHER_NUMBER, 'hello ', 'abc', 2, 1, 'RECEIVED')
+        received_sms_part_db.insert(
+            OWN_NUMBER, OTHER_NUMBER, 'world', 'abc', 2, 2, 'RECEIVED')
+
+        count = received_sms_part_db.mark_group_assembled(
+            OWN_NUMBER, OTHER_NUMBER, 'abc', 42, 'ASSEMBLED')
+
+        rows = received_sms_part_db.list_group(OWN_NUMBER, OTHER_NUMBER, 'abc')
+        assert count == 2
+        assert all(r['sms_id'] == 42 for r in rows)
+        assert all(r['status'] == 'ASSEMBLED' for r in rows)
+
+
 class TestPhoneCallDB:
 
     def test_insert_and_get(self, phone_call_db):
-        mid = phone_call_db.insert(OUTGOING, '+1111', '+2222', 'CREATED')
+        mid = phone_call_db.insert(OUTGOING, OWN_NUMBER, OTHER_NUMBER, 'CREATED')
         row = phone_call_db.get(mid)
         assert row is not None
         assert row['type'] == 'OUTGOING'
-        assert row['own_number'] == '+1111'
-        assert row['other_number'] == '+2222'
+        assert row['own_number'] == OWN_NUMBER
+        assert row['other_number'] == OTHER_NUMBER
         assert row['status'] == 'CREATED'
         assert row['started_at'] is None
         assert row['ended_at'] is None
@@ -321,30 +385,30 @@ class TestPhoneCallDB:
     def test_insert_with_enum_status(self, phone_call_db):
         class S(Enum):
             RINGING = 0
-        mid = phone_call_db.insert(INCOMING, '+1111', '+2222', S.RINGING)
+        mid = phone_call_db.insert(INCOMING, OWN_NUMBER, OTHER_NUMBER, S.RINGING)
         assert phone_call_db.get(mid)['status'] == 'RINGING'
 
     def test_list_by_own_number_and_status(self, phone_call_db):
-        phone_call_db.insert(OUTGOING, '+1111', '+2222', 'CREATED')
-        phone_call_db.insert(INCOMING, '+1111', '+3333', 'RINGING')
-        rows = phone_call_db.list(own_number='+1111', status='RINGING')
+        phone_call_db.insert(OUTGOING, OWN_NUMBER, OTHER_NUMBER, 'CREATED')
+        phone_call_db.insert(INCOMING, OWN_NUMBER, THIRD_NUMBER, 'RINGING')
+        rows = phone_call_db.list(own_number=OWN_NUMBER, status='RINGING')
         assert len(rows) == 1
-        assert rows[0]['other_number'] == '+3333'
+        assert rows[0]['other_number'] == THIRD_NUMBER
 
     def test_update_status_from_status(self, phone_call_db):
-        mid = phone_call_db.insert(INCOMING, '+1111', '+2222', 'RINGING')
+        mid = phone_call_db.insert(INCOMING, OWN_NUMBER, OTHER_NUMBER, 'RINGING')
         assert phone_call_db.update_status(
             mid, 'ANSWER_REQUESTED', from_status='RINGING') is True
         assert phone_call_db.get(mid)['status'] == 'ANSWER_REQUESTED'
 
     def test_update_status_wrong_from_status_returns_false(self, phone_call_db):
-        mid = phone_call_db.insert(INCOMING, '+1111', '+2222', 'RINGING')
+        mid = phone_call_db.insert(INCOMING, OWN_NUMBER, OTHER_NUMBER, 'RINGING')
         assert phone_call_db.update_status(
             mid, 'ANSWER_REQUESTED', from_status='ENDED') is False
         assert phone_call_db.get(mid)['status'] == 'RINGING'
 
     def test_update_status_sets_times_and_extra(self, phone_call_db):
-        mid = phone_call_db.insert(OUTGOING, '+1111', '+2222', 'DIALING')
+        mid = phone_call_db.insert(OUTGOING, OWN_NUMBER, OTHER_NUMBER, 'DIALING')
         phone_call_db.update_status(
             mid, 'FAILED', started_at=1700000000, ended_at=1700000060,
             extra={'reason': 'busy'})

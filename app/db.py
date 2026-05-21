@@ -377,6 +377,113 @@ class SmsDB(BaseDB):
         ).rowcount)
 
 
+class ReceivedSMSPartDB(BaseDB):
+
+    schema = '''
+        `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+        `created_at` INTEGER NOT NULL,
+        `updated_at` INTEGER NOT NULL,
+        `sms_id` INT,
+        `own_number` TEXT NOT NULL,
+        `other_number` TEXT NOT NULL,
+        `content` TEXT NOT NULL,
+        `time` INTEGER,
+        `concat_reference` TEXT NOT NULL,
+        `concat_total` INTEGER NOT NULL,
+        `concat_sequence` INTEGER NOT NULL,
+        `raw_pdu` TEXT,
+        `encoding` TEXT,
+        `status` TEXT NOT NULL,
+        `extra` TEXT,
+        UNIQUE (
+            `own_number`, `other_number`, `concat_reference`,
+            `concat_sequence`
+        )
+    '''
+    indices = {
+        'received_sms_part_group_idx': (
+            'own_number', 'other_number', 'concat_reference', 'status'),
+        'received_sms_part_sms_idx': ('sms_id',),
+    }
+
+    def insert(self, own_number: str, other_number: str, content: str,
+               concat_reference: str, concat_total: int,
+               concat_sequence: int, status: str | Enum, *,
+               time_: int | None = None, raw_pdu: str | None = None,
+               encoding: str | None = None, extra: dict | None = None
+               ) -> int | None:
+        status = _enum_name(status)
+        extra_json = compact_json_dumps(extra) if extra is not None else None
+        t = int(time())
+        self._execute(
+            f"insert or ignore into `{self.name}` "
+            f"(`created_at`, `updated_at`, `own_number`, `other_number`, "
+            f"`content`, `time`, `concat_reference`, `concat_total`, "
+            f"`concat_sequence`, `raw_pdu`, `encoding`, `status`, `extra`) "
+            f"values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [t, t, own_number, other_number, content, time_,
+             concat_reference, concat_total, concat_sequence, raw_pdu,
+             encoding, status, extra_json]
+        )
+        row = self.get_by_key(
+            own_number, other_number, concat_reference, concat_sequence)
+        return row['id'] if row else None
+
+    def get_by_key(self, own_number: str, other_number: str,
+                   concat_reference: str, concat_sequence: int
+                   ) -> dict | None:
+        cursor = self._execute(
+            f"select * from `{self.name}` "
+            f"where `own_number` = ? and `other_number` = ? "
+            f"and `concat_reference` = ? and `concat_sequence` = ?",
+            [own_number, other_number, concat_reference, concat_sequence]
+        )
+        if not (row := cursor.fetchone()):
+            return None
+        cols = [c[0] for c in cursor.description]
+        return dict(zip(cols, row))
+
+    def list_group(self, own_number: str, other_number: str,
+                   concat_reference: str, *,
+                   status: str | Enum | None = None) -> list[dict]:
+        where = {
+            'own_number': own_number,
+            'other_number': other_number,
+            'concat_reference': concat_reference,
+        }
+        if status is not None:
+            where['status'] = _enum_name(status)
+        cursor = self._execute(
+            f"select * from `{self.name}` "
+            f"where {' and '.join(f'`{w}` = ?' for w in where)} "
+            f"order by `concat_sequence`",
+            [*where.values()]
+        )
+        cols = [c[0] for c in cursor.description]
+        return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    def list_unassembled_groups(self) -> list[dict]:
+        cursor = self._execute(
+            f"select `own_number`, `other_number`, `concat_reference` "
+            f"from `{self.name}` where `sms_id` is null "
+            f"group by `own_number`, `other_number`, `concat_reference`"
+        )
+        cols = [c[0] for c in cursor.description]
+        return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    def mark_group_assembled(self, own_number: str, other_number: str,
+                             concat_reference: str, sms_id: int,
+                             status: str | Enum) -> int:
+        return self._execute(
+            f"update `{self.name}` set `sms_id` = ?, `status` = ?, "
+            f"`updated_at` = ? "
+            f"where `own_number` = ? and `other_number` = ? "
+            f"and `concat_reference` = ? and `sms_id` is null",
+            [sms_id, _enum_name(status), int(time()), own_number,
+             other_number, concat_reference]
+        ).rowcount
+
+
 class PhoneCallDB(BaseDB):
 
     class PhoneCallType(Enum):

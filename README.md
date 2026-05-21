@@ -78,4 +78,5 @@ Legacy flat keys such as `sms_enabled`, `call_enabled`,
 
 ## Design Docs
 
+- [Multipart SMS Handling](docs/multipart-sms.md)
 - [Phone Calls, Audio Streams, and Recording Roadmap](docs/call-audio-roadmap.md)
