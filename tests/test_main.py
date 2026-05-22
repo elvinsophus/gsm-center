@@ -400,3 +400,39 @@ class TestMultipartSMS:
         run.assert_called_once()
         command = run.call_args.args[0]
         assert command == './sms hello world 1700000000'
+
+    def test_multipart_receive_logs_parts_then_complete_sms(self, fresh_db):
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._options = GSMCenter.DeviceOptions(sms_enabled=True)
+        center.logger = Mock()
+
+        first = Mock()
+        first.number = OTHER_NUMBER
+        first.text = 'hello '
+        first.status = object()
+        first.time.timestamp.return_value = 1700000000
+        first.concat_reference = 'abc'
+        first.concat_total = 2
+        first.concat_sequence = 1
+
+        second = Mock()
+        second.number = OTHER_NUMBER
+        second.text = 'world'
+        second.status = object()
+        second.time.timestamp.return_value = 1700000001
+        second.concat_reference = 'abc'
+        second.concat_total = 2
+        second.concat_sequence = 2
+
+        center._handle_received_sms(first)
+        center._handle_received_sms(second)
+
+        logs = [call.args[0] for call in center.logger.info.call_args_list]
+        assert logs == [
+            "received multipart SMS part from '+12025550122', length=6, "
+            "sequence=1/2, reference='abc'; awaiting more",
+            "received a new SMS from '+12025550122', length=11, "
+            "assembled_from=2 multipart parts",
+        ]

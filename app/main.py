@@ -1422,22 +1422,21 @@ class GSMCenter:
     def _handle_received_sms(self, sms: ReceivedSms):
         sender = self.normalise_number(sms.number)
         content = sms.text
-        self.logger.info(
-            f'received a new SMS from {sender!r}, length={len(content)}')
         recipient = self._own_number
         status = (ReceivedSMSStatus.READ
                   if sms.status == ReceivedSms.STATUS_RECEIVED_READ
                   else ReceivedSMSStatus.UNREAD)
         at = int(sms.time.timestamp())
+        part_info = self._extract_sms_part_info(sms)
         mid = self._store.add_received_sms(
-            sender, content, status, at, self._extract_sms_part_info(sms))
+            sender, content, status, at, part_info)
         if mid is None:
-            self.logger.info(
-                f'received multipart SMS part from {sender!r}; awaiting more')
+            self._log_received_sms_part(sender, content, part_info)
             return
         if stored_sms := self._store.get_received_sms(mid):
             content = stored_sms.content
             at = int(sms_t.timestamp()) if (sms_t := stored_sms.time) else at
+        self._log_received_sms(sender, content, part_info)
         options = self._options
         if cmd := options.on_sms_received:
             run_system_command(cmd.format(
@@ -1447,6 +1446,26 @@ class GSMCenter:
                 SMS_TIMESTAMP=at,
                 SMS_TIME_STR=timestamp_to_datetime(at)
             ), env=options.on_sms_received_env)
+
+    def _log_received_sms_part(self, sender: str, content: str,
+                               part_info: ReceivedSMSPartInfo | None):
+        details = ''
+        if part_info:
+            details = (
+                f', sequence={part_info.sequence}/{part_info.total}, '
+                f'reference={part_info.reference!r}')
+        self.logger.info(
+            f'received multipart SMS part from {sender!r}, '
+            f'length={len(content)}{details}; awaiting more')
+
+    def _log_received_sms(self, sender: str, content: str,
+                          part_info: ReceivedSMSPartInfo | None):
+        assembled = (
+            f', assembled_from={part_info.total} multipart parts'
+            if part_info else '')
+        self.logger.info(
+            f'received a new SMS from {sender!r}, length={len(content)}'
+            f'{assembled}')
 
     def _extract_sms_part_info(self, sms: ReceivedSms
                                ) -> ReceivedSMSPartInfo | None:
