@@ -2,6 +2,7 @@
 
 from unittest.mock import Mock, patch
 
+from app.audio import AudioPipeline
 from app.main import (GSMCenter, GSMStore, ReceivedSMSPartInfo,
                       ReceivedSMSPartStatus, ReceivedSMSStatus)
 
@@ -113,10 +114,16 @@ class TestManagedCallAudio:
             call_enabled=True,
             audio_device='gsm_usb',
             call_audio_command='./audio {CALL_ID} {CALL_AUDIO_INPUT}',
-            call_audio_env={'MODE': 'test'})
+            call_audio_env={'MODE': 'test'},
+            call_audio_input_command='./stt {CALL_ID}',
+            call_audio_input_env={'MODE': 'stt'},
+            call_audio_output_command='./tts {CALL_ID}',
+            call_audio_output_env={'MODE': 'tts'})
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
         center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
         center._call_recording_processes = {}
         center.logger = Mock()
         return center
@@ -132,7 +139,9 @@ class TestManagedCallAudio:
 
         with patch('app.main.AudioDeviceOptions.get', return_value=audio), \
                 patch('app.main.subprocess.Popen',
-                      return_value=process) as popen:
+                      return_value=process) as popen, \
+                patch('app.main.start_audio_input_command'), \
+                patch('app.main.start_audio_output_command'):
             center._update_phone_call_status(
                 mid, GSMCenter.PhoneCallStatus.ANSWERED, started_at=1700000000)
 
@@ -143,6 +152,31 @@ class TestManagedCallAudio:
         row = GSMStore.phone_call_db.get(mid)
         assert '"call_audio_pid":1234' in row['extra']
 
+    def test_answered_call_starts_input_output_pipelines(self, fresh_db):
+        center = self.make_center()
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'RINGING')
+        audio = GSMCenter.AudioDeviceOptions(
+            'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20)
+        input_pipeline = AudioPipeline(Mock(pid=2221), Mock(pid=2222))
+        output_pipeline = AudioPipeline(Mock(pid=3331), Mock(pid=3332))
+
+        with patch('app.main.AudioDeviceOptions.get', return_value=audio), \
+                patch('app.main.subprocess.Popen'), \
+                patch('app.main.start_audio_input_command',
+                      return_value=input_pipeline) as start_input, \
+                patch('app.main.start_audio_output_command',
+                      return_value=output_pipeline) as start_output:
+            center._update_phone_call_status(
+                mid, GSMCenter.PhoneCallStatus.ANSWERED, started_at=1700000000)
+
+        assert center._call_audio_input_pipelines[mid] is input_pipeline
+        assert center._call_audio_output_pipelines[mid] is output_pipeline
+        assert start_input.call_args.args[:2] == (audio, f'./stt {mid}')
+        assert start_input.call_args.kwargs['env']['MODE'] == 'stt'
+        assert start_output.call_args.args[:2] == (audio, f'./tts {mid}')
+        assert start_output.call_args.kwargs['env']['MODE'] == 'tts'
+
     def test_terminal_call_stops_managed_audio_process(self, fresh_db):
         center = self.make_center()
         mid = GSMStore.phone_call_db.insert(
@@ -151,13 +185,22 @@ class TestManagedCallAudio:
         process.poll.return_value = None
         process.returncode = 0
         center._call_audio_processes[mid] = process
+        center._call_audio_input_pipelines[mid] = AudioPipeline(
+            Mock(), Mock())
+        center._call_audio_output_pipelines[mid] = AudioPipeline(
+            Mock(), Mock())
 
-        center._update_phone_call_status(
-            mid, GSMCenter.PhoneCallStatus.ENDED, ended_at=1700000060)
+        with patch('app.main.stop_audio_pipeline',
+                   return_value=(0, 0)) as stop_pipeline:
+            center._update_phone_call_status(
+                mid, GSMCenter.PhoneCallStatus.ENDED, ended_at=1700000060)
 
         process.terminate.assert_called_once()
         process.wait.assert_called_once_with(timeout=5)
         assert mid not in center._call_audio_processes
+        assert mid not in center._call_audio_input_pipelines
+        assert mid not in center._call_audio_output_pipelines
+        assert stop_pipeline.call_count == 2
         row = GSMStore.phone_call_db.get(mid)
         assert '"call_audio_return_code":0' in row['extra']
 
@@ -169,10 +212,19 @@ class TestManagedCallAudio:
             'INCOMING', OWN_NUMBER, THIRD_NUMBER, 'ANSWERED')
         center._call_audio_processes[first] = Mock()
         center._call_audio_processes[second] = Mock()
+        center._call_audio_input_pipelines[first] = AudioPipeline(
+            Mock(), Mock())
+        center._call_audio_output_pipelines[second] = AudioPipeline(
+            Mock(), Mock())
 
-        center._stop_all_call_audio_processes()
+        with patch('app.main.stop_audio_pipeline', return_value=(0, 0)):
+            center._stop_all_call_audio_processes()
+            center._stop_all_call_audio_input_pipelines()
+            center._stop_all_call_audio_output_pipelines()
 
         assert center._call_audio_processes == {}
+        assert center._call_audio_input_pipelines == {}
+        assert center._call_audio_output_pipelines == {}
 
 
 class TestCallRecording:
@@ -190,6 +242,8 @@ class TestCallRecording:
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
         center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
         center._call_recording_processes = {}
         center.logger = Mock()
         return center

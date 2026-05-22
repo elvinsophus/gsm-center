@@ -123,7 +123,8 @@ CALL_AUDIO_OUTPUT
 
 For live audio, event hooks are not enough because the process is long-lived.
 `calls.audio.command` starts when a call becomes `ANSWERED` and stops when the
-call reaches `ENDED` or `FAILED`:
+call reaches `ENDED` or `FAILED`. Optional input/output adapter commands can
+also be configured when the integration only needs one side of the PCM stream:
 
 ```yaml
 DEVICES:
@@ -132,11 +133,19 @@ DEVICES:
       audio:
         command: "./scripts/call-audio-session.sh"
         env: {}
+        input:
+          command: "./scripts/call-stt.sh"
+          env: {}
+        output:
+          command: "./scripts/call-tts.sh"
+          env: {}
 ```
 
-The command receives call and audio environment variables and decides what to
-do. Examples include recording, bridging, playback, STT, TTS, or custom
-operator workflows.
+`calls.audio.command` receives call and audio environment variables and decides
+what to do. `calls.audio.input.command` receives raw PCM from the configured
+audio input on stdin. `calls.audio.output.command` writes raw PCM to stdout for
+playback through the configured audio output. Examples include recording,
+bridging, playback, STT, TTS, or custom operator workflows.
 
 gsm-center tracks the child process and terminates it during:
 
@@ -356,10 +365,12 @@ Implementation notes:
 
 ### Step 8: Add Optional STT/TTS Adapters
 
-- Keep STT/TTS outside the core by default.
-- Provide hooks or commands that consume/produce PCM.
+- Keep STT/TTS outside the core by default. Implemented.
+- Provide hooks or commands that consume/produce PCM. Implemented as
+  provider-neutral `calls.audio.input.command` and
+  `calls.audio.output.command`.
 - Add higher-level convenience APIs only after the lower-level stream model is
-  stable.
+  stable. Deferred.
 
 ## Non-Goals
 

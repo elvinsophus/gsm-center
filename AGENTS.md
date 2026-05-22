@@ -250,6 +250,12 @@ DEVICES:
       audio:
         command: "./scripts/call-audio-session.sh"
         env: {}
+        input:
+          command: "./scripts/call-stt.sh"
+          env: {}
+        output:
+          command: "./scripts/call-tts.sh"
+          env: {}
       recording:
         enabled: yes
         directory: "recordings"
@@ -291,6 +297,10 @@ Keep audio generic:
 - Hooks and managed commands decide behavior. `calls.audio.command` starts
   when a call becomes `ANSWERED` and is stopped on `ENDED`/`FAILED` or loop
   shutdown.
+- Optional `calls.audio.input.command` receives raw PCM from the configured
+  audio input on stdin, and optional `calls.audio.output.command` writes raw PCM
+  on stdout for playback through the configured audio output. These are generic
+  adapter points for STT, TTS, bridges, or custom media processors.
 - Recording is modeled as a managed media session with metadata in
   `phone_call_recording`, not as fixed built-in call behavior.
 - WebSocket audio streams carry raw PCM frames using `AUDIO_DEVICES`

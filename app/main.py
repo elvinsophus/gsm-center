@@ -21,6 +21,8 @@ from .config import config
 from .db import (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
                  PhoneCallDB, PhoneCallRecordingDB)
 from .utils import timestamp_to_datetime, safe, run_system_command
+from .audio import (start_audio_input_command, start_audio_output_command,
+                    stop_audio_pipeline)
 import phonenumbers
 
 
@@ -456,6 +458,10 @@ class DeviceOptions(NamedTuple):
     on_call_failed_env: dict = None
     call_audio_command: str = ''
     call_audio_env: dict = None
+    call_audio_input_command: str = ''
+    call_audio_input_env: dict = None
+    call_audio_output_command: str = ''
+    call_audio_output_env: dict = None
     call_recording_enabled: bool = False
     call_recording_directory: str = ''
     call_recording_command: str = ''
@@ -477,6 +483,8 @@ class DeviceOptions(NamedTuple):
         sms_received = _dict_or_empty(sms_conf.get('on_received'))
         call_hooks = _dict_or_empty(call_conf.get('hooks'))
         call_audio = _dict_or_empty(call_conf.get('audio'))
+        call_audio_input = _dict_or_empty(call_audio.get('input'))
+        call_audio_output = _dict_or_empty(call_audio.get('output'))
         call_recording = _dict_or_empty(call_conf.get('recording'))
 
         if (sms_enabled := _first_defined(
@@ -506,6 +514,17 @@ class DeviceOptions(NamedTuple):
             args['call_audio_command'] = str(call_audio_command)
         if call_audio_env := _first_truthy(call_audio.get('env')):
             args['call_audio_env'] = call_audio_env
+        if call_audio_input_command := _first_truthy(
+                call_audio_input.get('command')):
+            args['call_audio_input_command'] = str(call_audio_input_command)
+        if call_audio_input_env := _first_truthy(call_audio_input.get('env')):
+            args['call_audio_input_env'] = call_audio_input_env
+        if call_audio_output_command := _first_truthy(
+                call_audio_output.get('command')):
+            args['call_audio_output_command'] = str(call_audio_output_command)
+        if call_audio_output_env := _first_truthy(
+                call_audio_output.get('env')):
+            args['call_audio_output_env'] = call_audio_output_env
         if (recording_enabled := call_recording.get('enabled')) is not None:
             args['call_recording_enabled'] = bool(recording_enabled)
         if recording_directory := _first_truthy(
@@ -686,6 +705,8 @@ class GSMCenter:
         self._is_alive = True
         self._active_calls = {}
         self._call_audio_processes = {}
+        self._call_audio_input_pipelines = {}
+        self._call_audio_output_pipelines = {}
         self._call_recording_processes = {}
 
         self._connect()
@@ -716,6 +737,8 @@ class GSMCenter:
         self._own_number = self._check_own_number()
         self._store = GSMStore(self._own_number)
         self._call_audio_processes = {}
+        self._call_audio_input_pipelines = {}
+        self._call_audio_output_pipelines = {}
         self._call_recording_processes = {}
         self._assemble_stored_received_sms_parts()
         self._clear_stale_phone_calls()
@@ -1037,9 +1060,13 @@ class GSMCenter:
     def _sync_call_audio_process(self, call: StoredPhoneCall):
         if call.status is PhoneCallStatus.ANSWERED:
             self._start_call_audio_process(call.id)
+            self._start_call_audio_input_pipeline(call.id)
+            self._start_call_audio_output_pipeline(call.id)
             self._start_call_recording_process(call.id)
         elif call.status in (PhoneCallStatus.ENDED, PhoneCallStatus.FAILED):
             self._stop_call_audio_process(call.id)
+            self._stop_call_audio_input_pipeline(call.id)
+            self._stop_call_audio_output_pipeline(call.id)
             self._stop_call_recording_process(
                 call.id, failed=(call.status is PhoneCallStatus.FAILED))
 
@@ -1099,6 +1126,125 @@ class GSMCenter:
     def _stop_all_call_audio_processes(self):
         for mid in list(self._call_audio_processes):
             self._stop_call_audio_process(mid)
+
+    def _start_call_audio_input_pipeline(self, mid: int):
+        options = self._options
+        if not options.call_audio_input_command:
+            return
+        if not hasattr(self, '_call_audio_input_pipelines'):
+            self._call_audio_input_pipelines = {}
+        if mid in self._call_audio_input_pipelines:
+            return
+
+        device = (AudioDeviceOptions.get(options.audio_device)
+                  if options.audio_device else None)
+        if not device:
+            self.logger.error(
+                f'call audio input command for call #{mid} has no audio device')
+            return
+        event_time = int(time())
+        env = self._phone_call_hook_env(mid, event_time)
+        env.update({
+            str(k): str(v) for k, v in (options.call_audio_input_env or {}
+                                        ).items()
+        })
+        cmd = options.call_audio_input_command.format(**env)
+        self.logger.info(
+            f'starting call audio input command for call #{mid}: {cmd}')
+        try:
+            pipeline = start_audio_input_command(device, cmd, env=env)
+        except Exception as e:
+            self.logger.error(
+                f'call audio input command for call #{mid} failed due to {e!r}')
+            self._merge_phone_call_extra(
+                mid, call_audio_input_error=repr(e),
+                call_audio_input_started_at=event_time)
+            return
+        self._call_audio_input_pipelines[mid] = pipeline
+        self._merge_phone_call_extra(
+            mid, call_audio_input_pid=pipeline.sink.pid,
+            call_audio_input_source_pid=(
+                pipeline.source.pid if pipeline.source else None),
+            call_audio_input_started_at=event_time,
+            call_audio_input_command=cmd)
+
+    def _stop_call_audio_input_pipeline(self, mid: int):
+        if not hasattr(self, '_call_audio_input_pipelines'):
+            self._call_audio_input_pipelines = {}
+        pipeline = self._call_audio_input_pipelines.pop(mid, None)
+        if pipeline is None:
+            return
+        stopped_at = int(time())
+        source_code, sink_code = stop_audio_pipeline(pipeline)
+        self._merge_phone_call_extra(
+            mid, call_audio_input_stopped_at=stopped_at,
+            call_audio_input_source_return_code=source_code,
+            call_audio_input_return_code=sink_code)
+
+    def _stop_all_call_audio_input_pipelines(self):
+        if not hasattr(self, '_call_audio_input_pipelines'):
+            self._call_audio_input_pipelines = {}
+        for mid in list(self._call_audio_input_pipelines):
+            self._stop_call_audio_input_pipeline(mid)
+
+    def _start_call_audio_output_pipeline(self, mid: int):
+        options = self._options
+        if not options.call_audio_output_command:
+            return
+        if not hasattr(self, '_call_audio_output_pipelines'):
+            self._call_audio_output_pipelines = {}
+        if mid in self._call_audio_output_pipelines:
+            return
+
+        device = (AudioDeviceOptions.get(options.audio_device)
+                  if options.audio_device else None)
+        if not device:
+            self.logger.error(
+                f'call audio output command for call #{mid} has no audio device')
+            return
+        event_time = int(time())
+        env = self._phone_call_hook_env(mid, event_time)
+        env.update({
+            str(k): str(v) for k, v in (options.call_audio_output_env or {}
+                                        ).items()
+        })
+        cmd = options.call_audio_output_command.format(**env)
+        self.logger.info(
+            f'starting call audio output command for call #{mid}: {cmd}')
+        try:
+            pipeline = start_audio_output_command(device, cmd, env=env)
+        except Exception as e:
+            self.logger.error(
+                f'call audio output command for call #{mid} failed due to {e!r}')
+            self._merge_phone_call_extra(
+                mid, call_audio_output_error=repr(e),
+                call_audio_output_started_at=event_time)
+            return
+        self._call_audio_output_pipelines[mid] = pipeline
+        self._merge_phone_call_extra(
+            mid, call_audio_output_pid=pipeline.source.pid,
+            call_audio_output_sink_pid=pipeline.sink.pid,
+            call_audio_output_started_at=event_time,
+            call_audio_output_command=cmd)
+
+    def _stop_call_audio_output_pipeline(self, mid: int):
+        if not hasattr(self, '_call_audio_output_pipelines'):
+            self._call_audio_output_pipelines = {}
+        pipeline = self._call_audio_output_pipelines.pop(mid, None)
+        if pipeline is None:
+            return
+        stopped_at = int(time())
+        source_code, sink_code = stop_audio_pipeline(pipeline)
+        self._merge_phone_call_extra(
+            mid, call_audio_output_stopped_at=stopped_at,
+            call_audio_output_return_code=source_code,
+            call_audio_output_sink_return_code=sink_code)
+
+    def _stop_all_call_audio_output_pipelines(self):
+        if not hasattr(self, '_call_audio_output_pipelines'):
+            self._call_audio_output_pipelines = {}
+        for mid in list(self._call_audio_output_pipelines):
+            self._stop_call_audio_output_pipeline(mid)
 
     def _start_call_recording_process(self, mid: int):
         options = self._options
@@ -1502,6 +1648,8 @@ class GSMCenter:
         self._is_alive = False
         self._loop_thread.join()
         self._stop_all_call_audio_processes()
+        self._stop_all_call_audio_input_pipelines()
+        self._stop_all_call_audio_output_pipelines()
         self._stop_all_call_recording_processes()
         self._modem.close()
 

@@ -43,6 +43,12 @@ DEVICES:
       #audio:
         #command:  # managed long-running audio command for an answered call
         #env:  # environment variables for managed audio command
+        #input:
+          #command:  # optional command that receives raw PCM from call audio input on stdin, e.g. STT
+          #env:  # environment variables for audio input command
+        #output:
+          #command:  # optional command that writes raw PCM to stdout for call audio output, e.g. TTS
+          #env:  # environment variables for audio output command
       #recording:
         #enabled:  # whether recording is enabled, e.g. yes
         #directory:  # where recordings should be stored, e.g. recordings

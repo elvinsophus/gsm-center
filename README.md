@@ -91,6 +91,12 @@ DEVICES:
       audio:
         command: "./scripts/call-audio-session.sh"
         env: {}
+        input:
+          command: "./scripts/call-stt.sh"
+          env: {}
+        output:
+          command: "./scripts/call-tts.sh"
+          env: {}
       recording:
         enabled: yes
         directory: "recordings"

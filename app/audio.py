@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
 
+from __future__ import annotations
+
+from os import environ
+import shlex
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, TYPE_CHECKING
 
-from .main import AudioDeviceOptions
+if TYPE_CHECKING:
+    from .main import AudioDeviceOptions
 
 
 class AudioCommandResult(NamedTuple):
@@ -12,6 +17,11 @@ class AudioCommandResult(NamedTuple):
     return_code: int
     stdout: str
     stderr: str
+
+
+class AudioPipeline(NamedTuple):
+    source: subprocess.Popen | None
+    sink: subprocess.Popen
 
 
 _FORMAT_ALIASES = {
@@ -113,6 +123,47 @@ def pcm_frame_bytes(device: AudioDeviceOptions) -> int:
     return max(1, size * device.frame_ms // 1000)
 
 
+def start_audio_input_command(
+        device: AudioDeviceOptions, command: str, *,
+        env: dict | None = None) -> AudioPipeline:
+    if not command:
+        raise ValueError('command is required')
+    source = subprocess.Popen(
+        record_pcm_command(device), stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, start_new_session=True)
+    sink = subprocess.Popen(
+        shlex.split(command), stdin=source.stdout,
+        env={**environ, **(env or {})}, start_new_session=True)
+    if source.stdout:
+        source.stdout.close()
+    return AudioPipeline(source, sink)
+
+
+def start_audio_output_command(
+        device: AudioDeviceOptions, command: str, *,
+        env: dict | None = None) -> AudioPipeline:
+    if not command:
+        raise ValueError('command is required')
+    source = subprocess.Popen(
+        shlex.split(command), stdout=subprocess.PIPE,
+        env={**environ, **(env or {})}, start_new_session=True)
+    sink = subprocess.Popen(
+        play_pcm_command(device), stdin=source.stdout,
+        stderr=subprocess.PIPE, start_new_session=True)
+    if source.stdout:
+        source.stdout.close()
+    return AudioPipeline(source, sink)
+
+
+def stop_audio_pipeline(pipeline: AudioPipeline, *, timeout: int = 5
+                        ) -> tuple[int | None, int | None]:
+    for process in (pipeline.source, pipeline.sink):
+        if process is not None:
+            _terminate_process(process, timeout)
+    source_code = pipeline.source.returncode if pipeline.source else None
+    return source_code, pipeline.sink.returncode
+
+
 def _validate_seconds(seconds: int) -> int:
     seconds = int(seconds)
     if seconds <= 0:
@@ -140,3 +191,14 @@ def _run_audio_command(command: list[str], *,
         command, capture_output=True, check=True, text=True, timeout=timeout)
     return AudioCommandResult(
         command, completed.returncode, completed.stdout, completed.stderr)
+
+
+def _terminate_process(process: subprocess.Popen, timeout: int):
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=timeout)

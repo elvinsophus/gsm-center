@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 
 from subprocess import CompletedProcess
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
-from app.audio import (pcm_frame_bytes, play_audio_sample, play_pcm_command,
-                       record_audio_sample, record_pcm_command)
+from app.audio import (AudioPipeline, pcm_frame_bytes, play_audio_sample,
+                       play_pcm_command, record_audio_sample,
+                       record_pcm_command, start_audio_input_command,
+                       start_audio_output_command, stop_audio_pipeline)
 from app.main import GSMCenter
 
 
@@ -95,3 +97,53 @@ class TestPCMStreamCommands:
     def test_pcm_frame_bytes_rejects_unknown_format(self):
         with pytest.raises(ValueError, match='unsupported audio format'):
             pcm_frame_bytes(audio_device()._replace(format='ulaw'))
+
+
+class TestAudioCommandPipelines:
+
+    def test_input_command_receives_raw_capture_on_stdin(self):
+        source = Mock()
+        source.stdout = Mock()
+        sink = Mock()
+
+        with patch('app.audio.subprocess.Popen',
+                   side_effect=[source, sink]) as popen:
+            pipeline = start_audio_input_command(
+                audio_device(), './stt --raw', env={'MODE': 'stt'})
+
+        assert pipeline == AudioPipeline(source, sink)
+        assert popen.call_args_list[0].args[0][0] == 'arecord'
+        assert popen.call_args_list[1].args[0] == ['./stt', '--raw']
+        assert popen.call_args_list[1].kwargs['stdin'] is source.stdout
+        assert popen.call_args_list[1].kwargs['env']['MODE'] == 'stt'
+        source.stdout.close.assert_called_once()
+
+    def test_output_command_feeds_raw_playback_from_stdout(self):
+        source = Mock()
+        source.stdout = Mock()
+        sink = Mock()
+
+        with patch('app.audio.subprocess.Popen',
+                   side_effect=[source, sink]) as popen:
+            pipeline = start_audio_output_command(
+                audio_device(), './tts --raw', env={'MODE': 'tts'})
+
+        assert pipeline == AudioPipeline(source, sink)
+        assert popen.call_args_list[0].args[0] == ['./tts', '--raw']
+        assert popen.call_args_list[1].args[0][0] == 'aplay'
+        assert popen.call_args_list[1].kwargs['stdin'] is source.stdout
+        assert popen.call_args_list[0].kwargs['env']['MODE'] == 'tts'
+        source.stdout.close.assert_called_once()
+
+    def test_stop_audio_pipeline_terminates_sink_and_source(self):
+        source = Mock()
+        source.poll.return_value = None
+        source.returncode = 0
+        sink = Mock()
+        sink.poll.return_value = None
+        sink.returncode = 0
+
+        assert stop_audio_pipeline(AudioPipeline(source, sink)) == (0, 0)
+
+        sink.terminate.assert_called_once()
+        source.terminate.assert_called_once()
