@@ -655,6 +655,23 @@ def _bytes_from_udh(udh) -> bytes:
             return bytes.fromhex(text)
         except ValueError:
             return b''
+    if isinstance(udh, (list, tuple)):
+        data = bytearray()
+        for item in udh:
+            if isinstance(item, int):
+                data.append(item)
+            elif isinstance(item, (bytes, bytearray)):
+                data.extend(item)
+            elif hasattr(item, 'encode'):
+                data.extend(item.encode())
+            elif all(hasattr(item, attr)
+                     for attr in ('id', 'dataLength', 'data')):
+                data.append(item.id)
+                data.append(item.dataLength)
+                data.extend(item.data)
+            else:
+                return b''
+        return bytes(data)
     try:
         return bytes(udh)
     except (TypeError, ValueError):

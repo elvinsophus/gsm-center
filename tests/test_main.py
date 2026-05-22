@@ -358,6 +358,12 @@ class TestMultipartSMS:
         assert GSMCenter._parse_concat_udh(bytes.fromhex('06080401020302')) == (
             '258', 3, 2)
 
+    def test_parse_concat_udh_from_information_elements(self):
+        ie = Mock()
+        ie.encode.return_value = bytes.fromhex('00032a0201')
+
+        assert GSMCenter._parse_concat_udh([ie]) == ('42', 2, 1)
+
     def test_received_hook_uses_integer_timestamp_for_assembled_sms(
             self, fresh_db):
         center = object.__new__(GSMCenter)
