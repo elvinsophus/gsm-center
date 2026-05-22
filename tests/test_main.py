@@ -32,6 +32,8 @@ class TestPhoneCallRequests:
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
         center._active_calls = {}
+        center._modem = Mock()
+        center._modem.write.return_value = []
         center.logger = Mock()
         center._run_call_hook = Mock()
         call = Mock()
@@ -47,6 +49,32 @@ class TestPhoneCallRequests:
         center.logger.info.assert_called_once_with(
             'received a call from an unknown number')
         center._run_call_hook.assert_called_once_with(calls[0].id, 'received')
+
+    def test_incoming_call_without_caller_id_uses_clcc_fallback(
+            self, fresh_db):
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {}
+        center._modem = Mock()
+        center._modem.write.return_value = [
+            '+CLCC: 1,1,4,0,0,"12025550122",145',
+            'OK',
+        ]
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        call = Mock()
+        call.number = None
+
+        center._handle_incoming_call(call)
+
+        calls = center._store.list_phone_calls()
+        assert len(calls) == 1
+        assert calls[0].other_number == OTHER_NUMBER
+        assert calls[0].caller == OTHER_NUMBER
+        center._modem.write.assert_called_once_with('AT+CLCC')
+        assert center.logger.info.call_args_list[-1].args[0] == (
+            f'received a call from {OTHER_NUMBER!r}')
 
 
 class TestPhoneCallStartupCleanup:

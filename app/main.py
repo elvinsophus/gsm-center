@@ -14,6 +14,7 @@ from os import environ
 from pathlib import Path
 import shlex
 import subprocess
+import re
 from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             IncomingCall, SentSms, ReceivedSms, StatusReport,
                             PinRequiredError, IncorrectPinError)
@@ -29,6 +30,8 @@ import phonenumbers
 SMSType = SmsDB.SMSType
 PhoneCallType = PhoneCallDB.PhoneCallType
 _EMPTY_ARG = object()
+_CLCC_REGEX = re.compile(
+    r'^\+CLCC:\s*(\d+),(\d),(\d),(\d),([^,]),"([^"]*)",(\d+)')
 
 
 class PendingSMSStatus(Enum):
@@ -886,8 +889,7 @@ class GSMCenter:
                 f'assembled {count} stored multipart SMS message(s)')
 
     def _handle_incoming_call(self, call: IncomingCall):
-        sender = (self.normalise_number(call.number)
-                  if call.number else '')
+        sender = self._incoming_call_number(call)
         if sender:
             self.logger.info(f'received a call from {sender!r}')
         else:
@@ -899,6 +901,39 @@ class GSMCenter:
             raise RuntimeError('incoming call could not be inserted into DB')
         self._active_calls[mid] = call
         self._run_call_hook(mid, 'received')
+
+    def _incoming_call_number(self, call: IncomingCall) -> str:
+        if call.number:
+            return self.normalise_number(call.number)
+        if number := self._query_incoming_call_number():
+            self.logger.info(
+                f'resolved missing caller ID from AT+CLCC: {number!r}')
+            return number
+        return ''
+
+    def _query_incoming_call_number(self) -> str:
+        try:
+            lines = self._modem.write('AT+CLCC')
+        except Exception as e:
+            self.logger.warning(
+                f'could not query caller ID with AT+CLCC due to {e!r}')
+            return ''
+        for line in lines:
+            if not (match := _CLCC_REGEX.match(line)):
+                continue
+            _, direction, status, _, _, number, ton = match.groups()
+            if direction == '1' and status in ('4', '5') and number:
+                try:
+                    return self._normalise_clcc_number(number, ton)
+                except ValueError:
+                    self.logger.warning(
+                        f'could not normalise AT+CLCC caller ID {number!r}')
+        return ''
+
+    def _normalise_clcc_number(self, number: str, ton: str) -> str:
+        if ton == '145' and not number.startswith('+'):
+            number = f'+{number}'
+        return self.normalise_number(number)
 
     def _clear_stale_phone_calls(self):
         if not self._options.call_enabled:
