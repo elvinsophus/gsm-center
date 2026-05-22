@@ -27,6 +27,27 @@ class TestPhoneCallRequests:
         assert GSMStore.request_phone_call_hangup(mid) is True
         assert db.get(mid)['status'] == 'HANGUP_REQUESTED'
 
+    def test_incoming_call_without_caller_id_is_stored(self, fresh_db):
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {}
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        call = Mock()
+        call.number = None
+
+        center._handle_incoming_call(call)
+
+        calls = center._store.list_phone_calls()
+        assert len(calls) == 1
+        assert calls[0].other_number == ''
+        assert calls[0].caller == ''
+        assert center._active_calls[calls[0].id] is call
+        center.logger.info.assert_called_once_with(
+            'received a call from an unknown number')
+        center._run_call_hook.assert_called_once_with(calls[0].id, 'received')
+
 
 class TestPhoneCallStartupCleanup:
 

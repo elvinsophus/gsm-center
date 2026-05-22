@@ -825,6 +825,8 @@ class GSMCenter:
 
     @classmethod
     def normalise_number(cls, number: str) -> str:
+        if number is None:
+            raise ValueError('phone number is required')
         try:
             parsed = phonenumbers.parse(
                 number, region=config.get('DEFAULT_MOBILE_REGION'))
@@ -884,8 +886,12 @@ class GSMCenter:
                 f'assembled {count} stored multipart SMS message(s)')
 
     def _handle_incoming_call(self, call: IncomingCall):
-        sender = self.normalise_number(call.number)
-        self.logger.info(f'received a call from {sender!r}')
+        sender = (self.normalise_number(call.number)
+                  if call.number else '')
+        if sender:
+            self.logger.info(f'received a call from {sender!r}')
+        else:
+            self.logger.info('received a call from an unknown number')
         mid = self._store.phone_call_db.insert(
             PhoneCallType.INCOMING, self._own_number, sender,
             PhoneCallStatus.RINGING)
