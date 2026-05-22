@@ -32,6 +32,7 @@ class TestPhoneCallRequests:
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
         center._active_calls = {}
+        center._call_ring_counts = {}
         center._modem = Mock()
         center._modem.write.return_value = []
         center.logger = Mock()
@@ -46,6 +47,7 @@ class TestPhoneCallRequests:
         assert calls[0].other_number == ''
         assert calls[0].caller == ''
         assert center._active_calls[calls[0].id] is call
+        assert center._call_ring_counts[calls[0].id] == 1
         center.logger.info.assert_called_once_with(
             'received a call from an unknown number')
         center._run_call_hook.assert_called_once_with(calls[0].id, 'received')
@@ -56,6 +58,7 @@ class TestPhoneCallRequests:
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
         center._active_calls = {}
+        center._call_ring_counts = {}
         center._modem = Mock()
         center._modem.write.return_value = [
             '+CLCC: 1,1,4,0,0,"12025550122",145',
@@ -72,9 +75,68 @@ class TestPhoneCallRequests:
         assert len(calls) == 1
         assert calls[0].other_number == OTHER_NUMBER
         assert calls[0].caller == OTHER_NUMBER
+        assert center._call_ring_counts[calls[0].id] == 1
         center._modem.write.assert_called_once_with('AT+CLCC')
         assert center.logger.info.call_args_list[-1].args[0] == (
             f'received a call from {OTHER_NUMBER!r}')
+
+    def test_repeated_incoming_call_callback_does_not_insert_duplicate(
+            self, fresh_db):
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {}
+        center._call_ring_counts = {}
+        center._modem = Mock()
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        call = Mock()
+        call.number = OTHER_NUMBER
+        call.ringCount = 2
+
+        center._handle_incoming_call(call)
+        center._handle_incoming_call(call)
+
+        calls = center._store.list_phone_calls()
+        assert len(calls) == 1
+        assert center._active_calls[calls[0].id] is call
+        assert center._call_ring_counts[calls[0].id] == 2
+        center._run_call_hook.assert_called_once_with(calls[0].id, 'received')
+        assert center.logger.info.call_args_list[-1].args[0] == (
+            f'incoming call #{calls[0].id} is still ringing; ring_count=2')
+
+    def test_repeated_incoming_call_callback_with_new_object_uses_number(
+            self, fresh_db):
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {}
+        center._call_ring_counts = {}
+        center._modem = Mock()
+        center._modem.write.return_value = [
+            '+CLCC: 1,1,4,0,0,"12025550122",145',
+            'OK',
+        ]
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        first = Mock()
+        first.number = None
+        first.ringCount = 1
+        second = Mock()
+        second.number = None
+        second.ringCount = 2
+
+        center._handle_incoming_call(first)
+        center._handle_incoming_call(second)
+
+        calls = center._store.list_phone_calls()
+        assert len(calls) == 1
+        assert calls[0].other_number == OTHER_NUMBER
+        assert center._active_calls[calls[0].id] is second
+        assert center._call_ring_counts[calls[0].id] == 2
+        center._run_call_hook.assert_called_once_with(calls[0].id, 'received')
+        assert center.logger.info.call_args_list[-1].args[0] == (
+            f'incoming call #{calls[0].id} is still ringing; ring_count=2')
 
 
 class TestPhoneCallStartupCleanup:
@@ -99,6 +161,35 @@ class TestPhoneCallStartupCleanup:
         assert stale['ended_at'] is not None
         assert 'loop restarted' in stale['extra']
         assert finished['status'] == 'ENDED'
+
+    def test_refresh_active_phone_calls_marks_disappeared_calls_ended(
+            self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('INCOMING', OWN_NUMBER, OTHER_NUMBER, 'RINGING')
+        call = Mock()
+
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {mid: call}
+        center._call_ring_counts = {mid: 1}
+        center._modem = Mock()
+        center._modem.write.return_value = ['OK']
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        center._options = GSMCenter.DeviceOptions(call_enabled=True)
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+
+        center._refresh_active_phone_calls()
+
+        row = db.get(mid)
+        assert row['status'] == 'ENDED'
+        assert row['ended_at'] is not None
+        assert mid not in center._active_calls
+        assert mid not in center._call_ring_counts
 
 
 class TestPhoneCallHooks:

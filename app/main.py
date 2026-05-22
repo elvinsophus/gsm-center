@@ -639,7 +639,7 @@ def _first_attr(attrs: dict, names: tuple[str, ...]):
 def _first_int_attr(attrs: dict, names: tuple[str, ...]) -> int | None:
     value = _first_attr(attrs, names)
     if value is None:
-        return None
+        return ''
     try:
         # noinspection PyTypeChecker
         return int(value)
@@ -724,6 +724,7 @@ class GSMCenter:
         self._own_number = ''
         self._is_alive = True
         self._active_calls = {}
+        self._call_ring_counts = {}
         self._call_audio_processes = {}
         self._call_audio_input_pipelines = {}
         self._call_audio_output_pipelines = {}
@@ -756,7 +757,9 @@ class GSMCenter:
         self._connect()
         self._own_number = self._check_own_number()
         self._store = GSMStore(self._own_number)
+        self._active_calls = {}
         self._call_audio_processes = {}
+        self._call_ring_counts = {}
         self._call_audio_input_pipelines = {}
         self._call_audio_output_pipelines = {}
         self._call_recording_processes = {}
@@ -889,7 +892,18 @@ class GSMCenter:
                 f'assembled {count} stored multipart SMS message(s)')
 
     def _handle_incoming_call(self, call: IncomingCall):
-        sender = self._incoming_call_number(call)
+        sender, resolved_from_clcc = self._incoming_call_number(call)
+        if mid := self._active_call_id(call, sender):
+            self._active_calls[mid] = call
+            ring_count = self._call_ring_counts.get(mid, 1) + 1
+            self._call_ring_counts[mid] = ring_count
+            self.logger.info(
+                f'incoming call #{mid} is still ringing; '
+                f'ring_count={ring_count}')
+            return
+        if resolved_from_clcc:
+            self.logger.info(
+                f'resolved missing caller ID from AT+CLCC: {sender!r}')
         if sender:
             self.logger.info(f'received a call from {sender!r}')
         else:
@@ -900,40 +914,117 @@ class GSMCenter:
         if mid is None:
             raise RuntimeError('incoming call could not be inserted into DB')
         self._active_calls[mid] = call
+        self._call_ring_counts[mid] = 1
         self._run_call_hook(mid, 'received')
 
-    def _incoming_call_number(self, call: IncomingCall) -> str:
+    def _active_call_id(self, call: IncomingCall,
+                        other_number: str = '') -> int | None:
+        for mid, active_call in self._active_calls.items():
+            if active_call is call:
+                return mid
+        candidates = []
+        for mid in self._active_calls:
+            stored = self._store.get_phone_call(mid)
+            if not stored:
+                continue
+            if stored.type is not PhoneCallType.INCOMING:
+                continue
+            if stored.status not in (
+                    PhoneCallStatus.RINGING,
+                    PhoneCallStatus.ANSWER_REQUESTED,
+                    PhoneCallStatus.ANSWERED,
+                    PhoneCallStatus.HANGUP_REQUESTED):
+                continue
+            if other_number and stored.other_number == other_number:
+                return mid
+            if not other_number and not stored.other_number:
+                candidates.append(mid)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _incoming_call_number(self, call: IncomingCall) -> tuple[str, bool]:
         if call.number:
-            return self.normalise_number(call.number)
+            return self.normalise_number(call.number), False
         if number := self._query_incoming_call_number():
-            self.logger.info(
-                f'resolved missing caller ID from AT+CLCC: {number!r}')
-            return number
-        return ''
+            try:
+                call.number = number
+            except Exception:
+                pass
+            return number, True
+        return '', False
 
     def _query_incoming_call_number(self) -> str:
+        for call in self._query_modem_calls():
+            if (call['direction'] == '1' and call['status'] in ('4', '5')
+                    and call['number']):
+                return call['number']
+        return None
+
+    def _query_modem_calls(self) -> list[dict]:
         try:
             lines = self._modem.write('AT+CLCC')
         except Exception as e:
             self.logger.warning(
-                f'could not query caller ID with AT+CLCC due to {e!r}')
-            return ''
+                f'could not query active calls with AT+CLCC due to {e!r}')
+            return []
+        calls = []
         for line in lines:
             if not (match := _CLCC_REGEX.match(line)):
                 continue
-            _, direction, status, _, _, number, ton = match.groups()
-            if direction == '1' and status in ('4', '5') and number:
+            index, direction, status, mode, multiparty, number, ton = (
+                match.groups())
+            normalised_number = ''
+            if number:
                 try:
-                    return self._normalise_clcc_number(number, ton)
+                    normalised_number = self._normalise_clcc_number(
+                        number, ton)
                 except ValueError:
                     self.logger.warning(
                         f'could not normalise AT+CLCC caller ID {number!r}')
-        return ''
+            calls.append(dict(
+                index=index, direction=direction, status=status, mode=mode,
+                multiparty=multiparty, number=normalised_number, ton=ton))
+        return calls
 
     def _normalise_clcc_number(self, number: str, ton: str) -> str:
         if ton == '145' and not number.startswith('+'):
             number = f'+{number}'
         return self.normalise_number(number)
+
+    def _refresh_active_phone_calls(self):
+        if not self._active_calls:
+            return
+        modem_calls = self._query_modem_calls()
+        for mid in list(self._active_calls):
+            stored = self._store.get_phone_call(mid)
+            if not stored:
+                self._active_calls.pop(mid, None)
+                self._call_ring_counts.pop(mid, None)
+                continue
+            if stored.status in (PhoneCallStatus.ENDED, PhoneCallStatus.FAILED):
+                self._active_calls.pop(mid, None)
+                self._call_ring_counts.pop(mid, None)
+                continue
+            if self._stored_call_is_visible_on_modem(stored, modem_calls):
+                continue
+            self.logger.info(f'phone call #{mid} is no longer active')
+            self._update_phone_call_status(
+                mid, PhoneCallStatus.ENDED, ended_at=int(time()),
+                extra=dict(error='call disappeared from AT+CLCC'))
+            self._active_calls.pop(mid, None)
+            self._call_ring_counts.pop(mid, None)
+
+    def _stored_call_is_visible_on_modem(
+            self, stored: StoredPhoneCall, modem_calls: list[dict]) -> bool:
+        direction = '0' if stored.type is PhoneCallType.OUTGOING else '1'
+        for call in modem_calls:
+            if call['direction'] != direction:
+                continue
+            if stored.other_number and call['number']:
+                if stored.other_number == call['number']:
+                    return True
+                continue
+            return True
+        return False
 
     def _clear_stale_phone_calls(self):
         if not self._options.call_enabled:
@@ -997,6 +1088,7 @@ class GSMCenter:
                 extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
         else:
             self._active_calls[mid] = call
+            self._call_ring_counts[mid] = 1
             status = statuses.ANSWERED if getattr(call, 'answered', False) \
                 else statuses.DIALING
             self._update_phone_call_status(
@@ -1016,6 +1108,7 @@ class GSMCenter:
                 self._update_phone_call_status(
                     mid, PhoneCallStatus.ENDED, ended_at=int(time()))
                 self._active_calls.pop(mid, None)
+                self._call_ring_counts.pop(mid, None)
         return callback
 
     def process_phone_call_requests(self):
@@ -1045,6 +1138,7 @@ class GSMCenter:
                     extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
             else:
                 self._active_calls[mid] = call
+                self._call_ring_counts[mid] = 1
 
         for row in db.list(
                 own_number=self._own_number,
@@ -1055,6 +1149,8 @@ class GSMCenter:
                 own_number=self._own_number,
                 status=statuses.HANGUP_REQUESTED, limit=10):
             self._hangup_phone_call(row['id'])
+
+        self._refresh_active_phone_calls()
 
     def _answer_phone_call(self, mid: int):
         statuses = PhoneCallStatus
@@ -1088,6 +1184,7 @@ class GSMCenter:
                 extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
         else:
             self._active_calls.pop(mid, None)
+            self._call_ring_counts.pop(mid, None)
             self._update_phone_call_status(
                 mid, statuses.ENDED, ended_at=int(time()))
 
