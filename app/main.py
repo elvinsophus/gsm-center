@@ -436,8 +436,11 @@ class GSMStore:
             return False
         if status is PhoneCallStatus.HANGUP_REQUESTED:
             return True
+        extra = json_loads(row['extra']) if row.get('extra') else {}
+        extra['hangup_requested_from'] = status.name
         return cls.phone_call_db.update_status(
-            mid, PhoneCallStatus.HANGUP_REQUESTED, from_status=status)
+            mid, PhoneCallStatus.HANGUP_REQUESTED, from_status=status,
+            extra=extra)
 
 
 class DeviceOptions(NamedTuple):
@@ -901,18 +904,21 @@ class GSMCenter:
                 f'incoming call #{mid} is still ringing; '
                 f'ring_count={ring_count}')
             return
-        if resolved_from_clcc:
-            self.logger.info(
-                f'resolved missing caller ID from AT+CLCC: {sender!r}')
-        if sender:
-            self.logger.info(f'received a call from {sender!r}')
-        else:
-            self.logger.info('received a call from an unknown number')
         mid = self._store.phone_call_db.insert(
             PhoneCallType.INCOMING, self._own_number, sender,
             PhoneCallStatus.RINGING)
         if mid is None:
             raise RuntimeError('incoming call could not be inserted into DB')
+        if resolved_from_clcc:
+            self.logger.info(
+                f'resolved missing caller ID for call #{mid} '
+                f'from AT+CLCC: {sender!r}')
+        if sender:
+            self.logger.info(
+                f'received incoming call #{mid} from {sender!r}')
+        else:
+            self.logger.info(
+                f'received incoming call #{mid} from an unknown number')
         self._active_calls[mid] = call
         self._call_ring_counts[mid] = 1
         self._run_call_hook(mid, 'received')
@@ -1009,7 +1015,8 @@ class GSMCenter:
             self.logger.info(f'phone call #{mid} is no longer active')
             self._update_phone_call_status(
                 mid, PhoneCallStatus.ENDED, ended_at=int(time()),
-                extra=dict(error='call disappeared from AT+CLCC'))
+                extra=dict(
+                    ended_reason='remote_hangup_or_modem_cleared_call'))
             self._active_calls.pop(mid, None)
             self._call_ring_counts.pop(mid, None)
 
@@ -1155,13 +1162,17 @@ class GSMCenter:
     def _answer_phone_call(self, mid: int):
         statuses = PhoneCallStatus
         if not (call := self._active_calls.get(mid)):
+            self.logger.warning(
+                f'cannot answer phone call #{mid}: live call is not available')
             self._update_phone_call_status(
                 mid, statuses.FAILED, ended_at=int(time()),
                 extra=dict(error='live call is not available'))
             return
+        self.logger.info(f'answering phone call #{mid}')
         try:
             call.answer()
         except Exception as e:
+            self.logger.error(f'phone call #{mid} answer failed due to {e!r}')
             self._update_phone_call_status(
                 mid, statuses.FAILED, ended_at=int(time()),
                 extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
@@ -1172,21 +1183,60 @@ class GSMCenter:
     def _hangup_phone_call(self, mid: int):
         statuses = PhoneCallStatus
         if not (call := self._active_calls.get(mid)):
+            self.logger.warning(
+                f'cannot hang up phone call #{mid}: '
+                f'live call is not available')
             self._update_phone_call_status(
                 mid, statuses.ENDED, ended_at=int(time()),
                 extra=dict(error='live call is not available'))
             return
+        stored = self._store.get_phone_call(mid)
+        requested_from = ''
+        if stored and stored.extra:
+            requested_from = stored.extra.get('hangup_requested_from', '')
+        self.logger.info(f'hanging up phone call #{mid}')
         try:
-            call.hangup()
+            if (stored and stored.type is PhoneCallType.INCOMING
+                    and requested_from in ('RINGING', 'ANSWER_REQUESTED')):
+                self._reject_ringing_incoming_call(mid, call)
+            else:
+                call.hangup()
         except Exception as e:
+            self.logger.error(f'phone call #{mid} hangup failed due to {e!r}')
             self._update_phone_call_status(
                 mid, statuses.FAILED, ended_at=int(time()),
                 extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
         else:
             self._active_calls.pop(mid, None)
             self._call_ring_counts.pop(mid, None)
+            extra = {}
+            if (stored and stored.type is PhoneCallType.INCOMING
+                    and requested_from in ('RINGING', 'ANSWER_REQUESTED')):
+                extra.update(
+                    ended_by='local',
+                    ended_role='dialee',
+                    ended_reason='local_rejected')
+            else:
+                role = 'caller'
+                if stored and stored.type is PhoneCallType.INCOMING:
+                    role = 'dialee'
+                extra.update(ended_by='local', ended_role=role)
             self._update_phone_call_status(
-                mid, statuses.ENDED, ended_at=int(time()))
+                mid, statuses.ENDED, ended_at=int(time()),
+                extra=extra)
+
+    def _reject_ringing_incoming_call(self, mid: int, call: IncomingCall):
+        self.logger.info(
+            f'rejecting ringing incoming phone call #{mid} with AT+CHUP')
+        self._modem.write('AT+CHUP')
+        try:
+            call.ringing = False
+            call.active = False
+        except Exception:
+            pass
+        if hasattr(self._modem, 'activeCalls') and call.id in (
+                self._modem.activeCalls):
+            del self._modem.activeCalls[call.id]
 
     def _update_phone_call_status(
             self, mid: int, status: PhoneCallStatus, *,
@@ -1208,9 +1258,26 @@ class GSMCenter:
 
         after = self._store.get_phone_call(mid)
         if after and (before is None or before.status is not after.status):
+            self._log_phone_call_status_change(after, before)
             self._run_call_hook(mid, self._call_hook_name(after.status))
             self._sync_call_audio_process(after)
         return True
+
+    def _log_phone_call_status_change(
+            self, after: StoredPhoneCall, before: StoredPhoneCall | None):
+        prefix = f'phone call #{after.id}'
+        if before:
+            prefix += f' {before.status.name} -> {after.status.name}'
+        else:
+            prefix += f' -> {after.status.name}'
+        if after.status is PhoneCallStatus.ANSWERED:
+            self.logger.info(f'{prefix}; answered')
+        elif after.status is PhoneCallStatus.ENDED:
+            self.logger.info(f'{prefix}; ended')
+        elif after.status is PhoneCallStatus.FAILED:
+            self.logger.warning(f'{prefix}; failed')
+        else:
+            self.logger.info(prefix)
 
     def _sync_call_audio_process(self, call: StoredPhoneCall):
         if call.status is PhoneCallStatus.ANSWERED:

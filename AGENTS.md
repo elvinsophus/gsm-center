@@ -76,10 +76,10 @@ python manage.py list-received-smss [RCPT] -n 10   # View received SMS
 python manage.py list-smss [NUMBER] -n 10          # View all SMS for a number
 python manage.py list-sms-dialog NUM1 NUM2 -n 10   # View conversation thread
 python manage.py preview-sms-dialogs [NUM] -n 10   # Preview all conversation threads
-python manage.py list-phone-calls [OWN] -n 10      # View phone calls
+python manage.py list-phone-calls [OWN] -n 10      # View detailed phone calls
 python manage.py call CALLER RECIPIENT             # Queue outgoing phone call
-python manage.py answer-call CALL_ID               # Queue answer request
-python manage.py hangup-call CALL_ID               # Queue hangup request
+python manage.py answer-call [CALL_ID]             # Queue answer request; ID optional if unambiguous
+python manage.py hangup-call [CALL_ID]             # Queue hangup/reject request; ID optional if unambiguous
 python manage.py list-audio-devices                # List configured audio devices
 python manage.py test-audio-record NAME PATH       # NAME is an AUDIO_DEVICES key; PATH is output WAV
 python manage.py test-audio-play NAME PATH         # NAME is an AUDIO_DEVICES key; PATH is input WAV
@@ -198,6 +198,11 @@ Modem callback -> phone_call RINGING -> optional hook -> answer/hangup request
 The live modem call object exists only in the loop process. On loop startup,
 stale in-flight calls are marked `ENDED` so old rows do not remain actionable
 after supervisor restarts.
+
+For ringing incoming calls, `hangup-call` rejects the call without answering it.
+The loop uses `AT+CHUP` for this ring-time release and records the result as
+`ended_reason=local_rejected`. Carrier presentation of that rejection may still
+sound like "busy" to the caller.
 
 ## Configuration (`app/config.py`)
 

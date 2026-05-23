@@ -80,6 +80,12 @@ Incoming: RINGING -> ANSWER_REQUESTED -> ANSWERED -> HANGUP_REQUESTED -> ENDED
 Failure:  any active operation can become FAILED
 ```
 
+For an incoming call that is still ringing, a local hangup request means
+rejecting the call without answering it. The generic modem path uses `AT+CHUP`
+for this release. Some carriers present this rejection to the caller as busy;
+the app records it as `ended_reason=local_rejected` rather than as an answered
+call.
+
 Calls should emit hooks when significant lifecycle events happen:
 
 ```yaml

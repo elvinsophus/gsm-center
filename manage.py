@@ -2,6 +2,7 @@
 
 # noinspection PyPep8
 import click
+import json
 from flask.cli import FlaskGroup
 
 
@@ -178,9 +179,24 @@ def list_phone_calls(own_number, count):
     types = GSMCenter.PhoneCallType
     for call in GSMCenter.GSMStore(own_number).list_phone_calls(limit=count):
         direction = '->' if call.type is types.OUTGOING else '<-'
+        started_at = call.started_at or '-'
+        ended_at = call.ended_at or '-'
+        duration = _format_duration(call.started_at, call.ended_at)
+        extra = json.dumps(
+            call.extra, ensure_ascii=False, sort_keys=True
+        ) if call.extra else '{}'
+        ended_by = _format_call_ended_by(call, types)
         print('\n'.join([
-            f'#{call.id} | {call.time} | ({call.status.name})',
+            f'#{call.id} | {call.time} | {call.type.name} | '
+            f'{call.status.name}',
             f'  {call.own_number} {direction} {call.other_number}',
+            f'  caller: {call.caller or "(unknown)"}',
+            f'  recipient: {call.recipient or "(unknown)"}',
+            f'  started_at: {started_at}',
+            f'  ended_at: {ended_at}',
+            f'  duration: {duration}',
+            f'  ended_by: {ended_by}',
+            f'  extra: {extra}',
             ''
         ]))
 
@@ -196,10 +212,13 @@ def call(caller, recipient):
 
 
 @cli.command(short_help='Queue an answer request for a call.')
-@click.argument('call_id', type=int, metavar='CALL_ID')
+@click.argument('call_id', type=int, required=False, metavar='[CALL_ID]')
 def answer_call(call_id):
-    """Queue an answer request for ringing phone call CALL_ID."""
+    """Queue an answer request for CALL_ID, or the only ringing call."""
     from app.main import GSMCenter
+    if call_id is None:
+        call_id = _resolve_single_call_id(
+            GSMCenter, [GSMCenter.PhoneCallStatus.RINGING], 'answer')
     if GSMCenter.GSMStore.request_phone_call_answer(call_id):
         print(f'queued answer request for phone call #{call_id}')
     else:
@@ -207,14 +226,80 @@ def answer_call(call_id):
 
 
 @cli.command(short_help='Queue a hangup request for a call.')
-@click.argument('call_id', type=int, metavar='CALL_ID')
+@click.argument('call_id', type=int, required=False, metavar='[CALL_ID]')
 def hangup_call(call_id):
-    """Queue a hangup request for non-terminal phone call CALL_ID."""
+    """Queue a hangup request for CALL_ID, or the only active call.
+
+    For a ringing incoming call, this rejects the call. Some carriers present
+    rejection to the caller as busy.
+    """
     from app.main import GSMCenter
+    statuses = GSMCenter.PhoneCallStatus
+    if call_id is None:
+        call_id = _resolve_single_call_id(
+            GSMCenter,
+            [
+                statuses.CREATED,
+                statuses.DIALING,
+                statuses.RINGING,
+                statuses.ANSWER_REQUESTED,
+                statuses.ANSWERED,
+                statuses.HANGUP_REQUESTED,
+            ],
+            'hang up')
     if GSMCenter.GSMStore.request_phone_call_hangup(call_id):
         print(f'queued hangup request for phone call #{call_id}')
     else:
         raise click.ClickException(f'phone call #{call_id} not found')
+
+
+def _resolve_single_call_id(gsm_center, statuses, action: str) -> int:
+    store = gsm_center.GSMStore('')
+    calls = []
+    seen = set()
+    for status in statuses:
+        for call in store.list_phone_calls(status=status, limit=100):
+            if call.id not in seen:
+                calls.append(call)
+                seen.add(call.id)
+    if len(calls) == 1:
+        return calls[0].id
+    if not calls:
+        raise click.ClickException(f'no phone call is available to {action}')
+    ids = ', '.join(f'#{call.id}' for call in calls)
+    raise click.ClickException(
+        f'multiple phone calls are available to {action}: {ids}')
+
+
+def _format_duration(started_at, ended_at):
+    if not started_at:
+        return '-'
+    if not ended_at:
+        return 'ongoing'
+    seconds = max(0, int((ended_at - started_at).total_seconds()))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f'{hours:d}:{minutes:02d}:{seconds:02d}'
+    return f'{minutes:d}:{seconds:02d}'
+
+
+def _format_call_ended_by(call, types):
+    extra = call.extra or {}
+    if extra.get('ended_reason') == 'local_rejected':
+        role = extra.get('ended_role') or (
+            'dialee' if call.type is types.INCOMING else 'caller')
+        return f'rejected by local {role}'
+    ended_by = extra.get('ended_by')
+    role = extra.get('ended_role')
+    if ended_by == 'local':
+        return f'local {role}' if role else 'local'
+    if ended_by == 'remote':
+        return f'remote {role}' if role else 'remote'
+    if extra.get('ended_reason') == 'remote_hangup_or_modem_cleared_call':
+        role = 'dialee' if call.type is types.OUTGOING else 'caller'
+        return f'remote {role} or modem'
+    return '-'
 
 
 @cli.command(short_help='List configured audio devices.')

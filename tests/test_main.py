@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from json import loads as json_loads
 from unittest.mock import Mock, patch
 
 from app.audio import AudioPipeline
@@ -27,6 +28,56 @@ class TestPhoneCallRequests:
         assert GSMStore.request_phone_call_hangup(mid) is True
         assert db.get(mid)['status'] == 'HANGUP_REQUESTED'
 
+    def test_hangup_request_records_source_status(self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('INCOMING', OWN_NUMBER, OTHER_NUMBER, 'RINGING')
+
+        assert GSMStore.request_phone_call_hangup(mid) is True
+
+        row = db.get(mid)
+        assert row['status'] == 'HANGUP_REQUESTED'
+        assert json_loads(row['extra']) == {
+            'hangup_requested_from': 'RINGING'}
+
+    def test_local_ringing_incoming_hangup_records_rejection(self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('INCOMING', OWN_NUMBER, OTHER_NUMBER,
+                        'HANGUP_REQUESTED')
+        db.update_status(
+            mid, 'HANGUP_REQUESTED',
+            extra={'hangup_requested_from': 'RINGING'})
+        call = Mock()
+
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {mid: call}
+        center._call_ring_counts = {mid: 1}
+        center._modem = Mock()
+        center._modem.activeCalls = {call.id: call}
+        center._options = GSMCenter.DeviceOptions(call_enabled=True)
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+
+        center._hangup_phone_call(mid)
+
+        row = db.get(mid)
+        assert row['status'] == 'ENDED'
+        assert json_loads(row['extra']) == {
+            'ended_by': 'local',
+            'ended_reason': 'local_rejected',
+            'ended_role': 'dialee',
+        }
+        center._modem.write.assert_called_once_with('AT+CHUP')
+        call.hangup.assert_not_called()
+        assert call.ringing is False
+        assert call.active is False
+        assert call.id not in center._modem.activeCalls
+
     def test_incoming_call_without_caller_id_is_stored(self, fresh_db):
         center = object.__new__(GSMCenter)
         center._own_number = OWN_NUMBER
@@ -49,7 +100,8 @@ class TestPhoneCallRequests:
         assert center._active_calls[calls[0].id] is call
         assert center._call_ring_counts[calls[0].id] == 1
         center.logger.info.assert_called_once_with(
-            'received a call from an unknown number')
+            f'received incoming call #{calls[0].id} '
+            f'from an unknown number')
         center._run_call_hook.assert_called_once_with(calls[0].id, 'received')
 
     def test_incoming_call_without_caller_id_uses_clcc_fallback(
@@ -78,7 +130,7 @@ class TestPhoneCallRequests:
         assert center._call_ring_counts[calls[0].id] == 1
         center._modem.write.assert_called_once_with('AT+CLCC')
         assert center.logger.info.call_args_list[-1].args[0] == (
-            f'received a call from {OTHER_NUMBER!r}')
+            f'received incoming call #{calls[0].id} from {OTHER_NUMBER!r}')
 
     def test_repeated_incoming_call_callback_does_not_insert_duplicate(
             self, fresh_db):
@@ -188,6 +240,8 @@ class TestPhoneCallStartupCleanup:
         row = db.get(mid)
         assert row['status'] == 'ENDED'
         assert row['ended_at'] is not None
+        assert json_loads(row['extra']) == {
+            'ended_reason': 'remote_hangup_or_modem_cleared_call'}
         assert mid not in center._active_calls
         assert mid not in center._call_ring_counts
 
