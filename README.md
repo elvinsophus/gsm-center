@@ -133,9 +133,20 @@ DEVICES:
         format: mp3
         command: "ffmpeg -y -f alsa -ac 1 -ar 48000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
         env: {}
+        hooks:
+          completed:
+            command: "./scripts/on-recording-completed.sh"
+            env: {}
+          failed:
+            command: "./scripts/on-recording-failed.sh"
+            env: {}
 ```
 
 Use the sample rate recommended by `probe-audio-device`.
+Recording hooks run after the recording row has been finalized. They receive
+the normal call hook environment plus `CALL_RECORDING_ID`,
+`CALL_RECORDING_FILE`, `CALL_RECORDING_FORMAT`, `CALL_RECORDING_STATUS`,
+`CALL_RECORDING_STARTED_AT`, and `CALL_RECORDING_ENDED_AT`.
 
 ### 6. Run The Service
 
@@ -295,6 +306,13 @@ DEVICES:
         command: "ffmpeg -y -f alsa -ac 1 -ar 48000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
         format: mp3
         env: {}
+        hooks:
+          completed:
+            command: "./scripts/on-recording-completed.sh"
+            env: {}
+          failed:
+            command: "./scripts/on-recording-failed.sh"
+            env: {}
 ```
 
 Legacy flat keys such as `sms_enabled`, `call_enabled`,

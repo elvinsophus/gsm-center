@@ -546,6 +546,44 @@ class TestCallRecording:
         assert recording.status is GSMCenter.PhoneCallRecordingStatus.COMPLETED
         assert recording.extra['return_code'] == 0
 
+    def test_completed_recording_runs_hook_with_metadata(
+            self, fresh_db, tmp_path):
+        center = self.make_center(tmp_path)
+        center._options = center._options._replace(
+            call_recording_completed_command=(
+                './done {CALL_ID} {CALL_RECORDING_ID} '
+                '{CALL_RECORDING_STATUS}'),
+            call_recording_completed_env={'TARGET': 'archive'})
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'ANSWERED')
+        rid = GSMStore.phone_call_recording_db.insert(
+            mid, str(tmp_path / 'call.mp3'), 'mp3',
+            GSMCenter.PhoneCallRecordingStatus.RECORDING,
+            started_at=1700000000)
+        process = Mock()
+        process.poll.return_value = None
+        process.returncode = 0
+        center._call_recording_processes[mid] = (rid, process)
+
+        with patch('app.main.time', return_value=1700000061), \
+                patch('app.main.run_system_command') as run:
+            center._update_phone_call_status(
+                mid, GSMCenter.PhoneCallStatus.ENDED, ended_at=1700000060)
+
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        env = run.call_args.kwargs['env']
+        assert command == f'./done {mid} {rid} COMPLETED'
+        assert env['CALL_ID'] == str(mid)
+        assert env['CALL_STATUS'] == 'ENDED'
+        assert env['CALL_RECORDING_ID'] == str(rid)
+        assert env['CALL_RECORDING_FILE'] == str(tmp_path / 'call.mp3')
+        assert env['CALL_RECORDING_FORMAT'] == 'mp3'
+        assert env['CALL_RECORDING_STATUS'] == 'COMPLETED'
+        assert env['CALL_RECORDING_STARTED_AT'] == '1700000000'
+        assert env['CALL_RECORDING_ENDED_AT'] == '1700000061'
+        assert env['TARGET'] == 'archive'
+
     def test_early_recording_exit_is_marked_failed(self, fresh_db, tmp_path):
         center = self.make_center(tmp_path)
         mid = GSMStore.phone_call_db.insert(
@@ -568,6 +606,36 @@ class TestCallRecording:
         assert recording.extra['return_code'] == 1
         assert 'exited while call was active' in recording.extra['error']
         assert mid not in center._call_recording_processes
+
+    def test_failed_recording_runs_hook_with_metadata(
+            self, fresh_db, tmp_path):
+        center = self.make_center(tmp_path)
+        center._options = center._options._replace(
+            call_recording_failed_command=(
+                './failed {CALL_RECORDING_ID} {CALL_RECORDING_STATUS}'))
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'ANSWERED')
+        rid = GSMStore.phone_call_recording_db.insert(
+            mid, str(tmp_path / 'call.mp3'), 'mp3',
+            GSMCenter.PhoneCallRecordingStatus.RECORDING,
+            started_at=1700000000,
+            extra={'pid': 1234, 'command': './record call.mp3'})
+        process = Mock()
+        process.poll.return_value = 1
+        process.returncode = 1
+        center._call_recording_processes[mid] = (rid, process)
+
+        with patch('app.main.time', return_value=1700000062), \
+                patch('app.main.run_system_command') as run:
+            center._check_call_recording_processes()
+
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        env = run.call_args.kwargs['env']
+        assert command == f'./failed {rid} FAILED'
+        assert env['CALL_ID'] == str(mid)
+        assert env['CALL_RECORDING_STATUS'] == 'FAILED'
+        assert env['CALL_RECORDING_ENDED_AT'] == '1700000062'
 
 
 class TestMultipartSMS:

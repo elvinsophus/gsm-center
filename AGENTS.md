@@ -272,6 +272,13 @@ DEVICES:
         command: "ffmpeg -y -f alsa -ac 1 -ar 8000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
         format: mp3
         env: {}
+        hooks:
+          completed:
+            command: "./scripts/on-recording-completed.sh"
+            env: {}
+          failed:
+            command: "./scripts/on-recording-failed.sh"
+            env: {}
 ```
 
 Legacy flat keys are still supported:
@@ -316,6 +323,10 @@ Keep audio generic:
 - Recording commands are monitored while calls remain active. If a recording
   process exits unexpectedly, its `phone_call_recording` row is marked `FAILED`
   with the return code and command metadata.
+- Recording lifecycle hooks run after recording finalization and receive the
+  normal call hook environment plus `CALL_RECORDING_ID`,
+  `CALL_RECORDING_FILE`, `CALL_RECORDING_FORMAT`, `CALL_RECORDING_STATUS`,
+  `CALL_RECORDING_STARTED_AT`, and `CALL_RECORDING_ENDED_AT`.
 - WebSocket audio streams carry raw PCM frames using `AUDIO_DEVICES`
   `format`, `sample_rate`, `channels`, and `frame_ms`. Playback streams enforce
   one active owner per configured audio device output.

@@ -474,6 +474,10 @@ class DeviceOptions(NamedTuple):
     call_recording_command: str = ''
     call_recording_env: dict = None
     call_recording_format: str = 'mp3'
+    call_recording_completed_command: str = ''
+    call_recording_completed_env: dict = None
+    call_recording_failed_command: str = ''
+    call_recording_failed_env: dict = None
 
     @classmethod
     def from_dict(cls, d: dict) -> 'DeviceOptions':
@@ -493,6 +497,7 @@ class DeviceOptions(NamedTuple):
         call_audio_input = _dict_or_empty(call_audio.get('input'))
         call_audio_output = _dict_or_empty(call_audio.get('output'))
         call_recording = _dict_or_empty(call_conf.get('recording'))
+        call_recording_hooks = _dict_or_empty(call_recording.get('hooks'))
 
         if (sms_enabled := _first_defined(
                 sms_conf.get('enabled'), d.get('sms_enabled'))) is not None:
@@ -543,6 +548,12 @@ class DeviceOptions(NamedTuple):
             args['call_recording_env'] = recording_env
         if recording_format := _first_truthy(call_recording.get('format')):
             args['call_recording_format'] = str(recording_format)
+        for name in ('completed', 'failed'):
+            hook = _dict_or_empty(call_recording_hooks.get(name))
+            if cmd := _first_truthy(hook.get('command')):
+                args[f'call_recording_{name}_command'] = str(cmd)
+            if env := _first_truthy(hook.get('env')):
+                args[f'call_recording_{name}_env'] = env
         return cls(**args)
 
     @classmethod
@@ -1523,6 +1534,7 @@ class GSMCenter:
             self._store.phone_call_recording_db.update_status(
                 rid, PhoneCallRecordingStatus.FAILED,
                 ended_at=int(time()), extra={'error': repr(e), 'command': cmd})
+            self._run_call_recording_hook(rid, 'failed')
             return
 
         self._call_recording_processes[mid] = (rid, process)
@@ -1548,6 +1560,7 @@ class GSMCenter:
                 rid, PhoneCallRecordingStatus.FAILED,
                 ended_at=int(time()), extra=extra)
             self._call_recording_processes.pop(mid, None)
+            self._run_call_recording_hook(rid, 'failed')
 
     def _stop_call_recording_process(self, mid: int, *, failed: bool = False):
         if not hasattr(self, '_call_recording_processes'):
@@ -1575,6 +1588,9 @@ class GSMCenter:
         extra['return_code'] = process.returncode
         self._store.phone_call_recording_db.update_status(
             rid, status, ended_at=stopped_at, extra=extra)
+        self._run_call_recording_hook(
+            rid, 'failed' if status is PhoneCallRecordingStatus.FAILED
+            else 'completed')
 
     def _stop_all_call_recording_processes(self):
         for mid in list(self._call_recording_processes):
@@ -1585,6 +1601,46 @@ class GSMCenter:
         directory = self._options.call_recording_directory or 'recordings'
         suffix = format_.lstrip('.') or 'wav'
         return Path(directory) / f'call-{mid}-{started_at}.{suffix}'
+
+    def _run_call_recording_hook(self, rid: int, hook_name: str):
+        cmd, configured_env = self._call_recording_hook_config(hook_name)
+        if not cmd:
+            return
+        event_time = int(time())
+        hook_env = self._call_recording_hook_env(rid, event_time)
+        hook_env.update({
+            str(k): str(v) for k, v in (configured_env or {}).items()
+        })
+        run_system_command(
+            cmd.format(**hook_env), env={**environ, **hook_env})
+
+    def _call_recording_hook_config(
+            self, hook_name: str) -> tuple[str, dict | None]:
+        options = self._options
+        return (
+            getattr(options, f'call_recording_{hook_name}_command', ''),
+            getattr(options, f'call_recording_{hook_name}_env', None),
+        )
+
+    def _call_recording_hook_env(
+            self, rid: int, event_time: int) -> dict[str, str]:
+        recording = self._store.get_phone_call_recording(rid)
+        mid = recording.call_id if recording else 0
+        values = self._phone_call_hook_env(mid, event_time) if mid else {}
+        values.update({k: str(v) for k, v in {
+            'CALL_RECORDING_ID': rid,
+            'CALL_RECORDING_FILE': recording.path if recording else '',
+            'CALL_RECORDING_FORMAT': recording.format if recording else '',
+            'CALL_RECORDING_STATUS': (
+                recording.status.name if recording else ''),
+            'CALL_RECORDING_STARTED_AT': (
+                int(recording.started_at.timestamp())
+                if recording and recording.started_at else ''),
+            'CALL_RECORDING_ENDED_AT': (
+                int(recording.ended_at.timestamp())
+                if recording and recording.ended_at else ''),
+        }.items()})
+        return values
 
     def _merge_phone_call_extra(self, mid: int, **extra):
         row = self._store.phone_call_db.get(mid)

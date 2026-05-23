@@ -178,6 +178,13 @@ DEVICES:
         command: "ffmpeg -y -f alsa -ac 1 -ar 48000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
         format: mp3
         env: {}
+        hooks:
+          completed:
+            command: "./scripts/on-recording-completed.sh"
+            env: {}
+          failed:
+            command: "./scripts/on-recording-failed.sh"
+            env: {}
 ```
 
 The recording command can use ALSA, ffmpeg, arecord, sox, or another tool. A
@@ -189,6 +196,12 @@ ffmpeg -y -f alsa -ac 1 -ar 48000 -i "$CALL_AUDIO_INPUT" \
 ```
 
 At 32 kbps mono, recording size is roughly 240 KB per minute.
+
+Recording lifecycle hooks run after the recording process has been stopped and
+the `phone_call_recording` row has reached `COMPLETED` or `FAILED`. They
+receive the normal call hook environment plus `CALL_RECORDING_ID`,
+`CALL_RECORDING_FILE`, `CALL_RECORDING_FORMAT`, `CALL_RECORDING_STATUS`,
+`CALL_RECORDING_STARTED_AT`, and `CALL_RECORDING_ENDED_AT`.
 
 Later, duplex recording can be added by recording both capture and playback
 streams and muxing them into one file.
@@ -376,6 +389,8 @@ Implementation notes:
   exits as `FAILED`. Implemented.
 - Add APIs to list recordings for a call. Implemented as
   `GET /calls/<id>/recordings`.
+- Add recording completion/failure hooks with recording metadata. Implemented
+  under `calls.recording.hooks`.
 
 ### Step 7: Add WebSocket Audio Streams
 

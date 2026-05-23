@@ -55,6 +55,13 @@ DEVICES:
         #command:  # optional managed recording command, e.g. ffmpeg -y -f alsa -ac 1 -ar 48000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}
         #format:  # recording file extension/format, e.g. mp3
         #env:  # environment variables for recording command
+        #hooks:
+          #completed:
+            #command:  # command to execute after the recording is finalized
+            #env:  # environment variables for recording completed command
+          #failed:
+            #command:  # command to execute after recording fails
+            #env:  # environment variables for recording failed command
 
     # Legacy flat keys are still supported:
     #sms_enabled:
