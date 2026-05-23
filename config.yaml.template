@@ -4,7 +4,7 @@ AUDIO_DEVICES:
   #gsm_usb:
     #input:  # ALSA capture device, e.g. plughw:3,0
     #output:  # ALSA playback device, e.g. plughw:3,0
-    #sample_rate:  # audio sample rate, e.g. 8000
+    #sample_rate:  # audio sample rate, e.g. 48000; use probe-audio-device to verify
     #channels:  # channel count, e.g. 1
     #format:  # sample format, e.g. s16le
     #frame_ms:  # stream frame size in milliseconds, e.g. 20
@@ -52,7 +52,7 @@ DEVICES:
       #recording:
         #enabled:  # whether recording is enabled, e.g. yes
         #directory:  # where recordings should be stored, e.g. recordings
-        #command:  # optional managed recording command, e.g. ffmpeg -y -f alsa -ac 1 -ar 8000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}
+        #command:  # optional managed recording command, e.g. ffmpeg -y -f alsa -ac 1 -ar 48000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}
         #format:  # recording file extension/format, e.g. mp3
         #env:  # environment variables for recording command
 

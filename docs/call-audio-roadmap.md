@@ -44,7 +44,7 @@ AUDIO_DEVICES:
   gsm_usb:
     input: "plughw:3,0"
     output: "plughw:3,0"
-    sample_rate: 8000
+    sample_rate: 48000
     channels: 1
     format: s16le
     frame_ms: 20
@@ -175,7 +175,7 @@ DEVICES:
       recording:
         enabled: yes
         directory: "recordings"
-        command: "ffmpeg -y -f alsa -ac 1 -ar 8000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
+        command: "ffmpeg -y -f alsa -ac 1 -ar 48000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
         format: mp3
         env: {}
 ```
@@ -184,7 +184,7 @@ The recording command can use ALSA, ffmpeg, arecord, sox, or another tool. A
 compact, broadly compatible default records the capture side as mono MP3:
 
 ```bash
-ffmpeg -y -f alsa -ac 1 -ar 8000 -i "$CALL_AUDIO_INPUT" \
+ffmpeg -y -f alsa -ac 1 -ar 48000 -i "$CALL_AUDIO_INPUT" \
   -codec:a libmp3lame -b:a 32k "$CALL_RECORDING_FILE"
 ```
 
@@ -250,12 +250,27 @@ POST /audio/devices/<name>/test-play
 The matching CLI commands are:
 
 ```bash
+python manage.py list-audio-devices
+python manage.py discover-audio-devices
+python manage.py probe-audio-device --input plughw:3,0 --output plughw:3,0
+python manage.py probe-audio-device gsm_usb --input plughw:3,0 --output plughw:3,0
 python manage.py test-audio-record NAME PATH --seconds 3
 python manage.py test-audio-play NAME PATH
 ```
 
 Here, `NAME` is an `AUDIO_DEVICES` key such as `gsm_usb`. For recording,
 `PATH` is the output WAV file. For playback, `PATH` is the input WAV file.
+`discover-audio-devices` lists ALSA cards, capture endpoints, playback
+endpoints, and suggested `plughw:CARD,DEVICE` input/output strings. It helps a
+user choose the sound card before any config exists. `probe-audio-device` then
+tries common ALSA capture sample rates and prints a suggested `AUDIO_DEVICES`
+block. The optional positional `NAME` is just the suggested config key; it does
+not need to exist yet when `--input` is provided. Its default backend is
+`ffmpeg`, matching the recommended MP3 recording command; pass
+`--backend arecord` to probe the raw PCM stream path used by WebSocket input. It
+cannot resolve physical wiring ambiguity, but it catches failures such as a USB
+sound card accepting 48000 Hz capture through ffmpeg while rejecting 8000 Hz
+capture.
 
 Add recording control:
 
@@ -357,6 +372,8 @@ Implementation notes:
 - Start recording through a generic command or managed recorder. Implemented
   through `calls.recording.command`.
 - Store recording path, status, timestamps, and errors. Implemented.
+- Monitor managed recording commands while calls remain active and mark early
+  exits as `FAILED`. Implemented.
 - Add APIs to list recordings for a call. Implemented as
   `GET /calls/<id>/recordings`.
 

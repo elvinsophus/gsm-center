@@ -10,20 +10,21 @@ from sys import exc_info
 from traceback import format_tb
 from logging import getLogger
 from typing import NamedTuple
+from contextlib import suppress
 from os import environ
 from pathlib import Path
 import shlex
 import subprocess
 import re
 from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
-                            IncomingCall, SentSms, ReceivedSms, StatusReport,
-                            PinRequiredError, IncorrectPinError)
+                            Call, IncomingCall, SentSms, ReceivedSms,
+                            StatusReport, PinRequiredError, IncorrectPinError)
 from .config import config
 from .db import (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
                  PhoneCallDB, PhoneCallRecordingDB)
 from .utils import timestamp_to_datetime, safe, run_system_command
-from .audio import (start_audio_input_command, start_audio_output_command,
-                    stop_audio_pipeline)
+from .audio import (AudioPipeline, start_audio_input_command,
+                    start_audio_output_command, stop_audio_pipeline)
 import phonenumbers
 
 
@@ -624,7 +625,7 @@ def _sms_attrs(sms) -> dict:
             continue
         try:
             value = getattr(sms, name)
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             continue
         if callable(value):
             continue
@@ -642,7 +643,7 @@ def _first_attr(attrs: dict, names: tuple[str, ...]):
 def _first_int_attr(attrs: dict, names: tuple[str, ...]) -> int | None:
     value = _first_attr(attrs, names)
     if value is None:
-        return ''
+        return None
     try:
         # noinspection PyTypeChecker
         return int(value)
@@ -712,9 +713,9 @@ class GSMCenter:
 
         conf_ops = conf_ops.copy() if (conf_ops := dev_confs.get(port)) else {}
         conf_ops.update(kwargs)
-        self._options = options \
-            = DeviceOptions.from_dict(conf_ops)
-        self._modem = GsmModem(
+        options = DeviceOptions.from_dict(conf_ops)
+        self._options: DeviceOptions = options
+        self._modem: GsmModem = GsmModem(
             port,
             options.baud_rate,
             incomingCallCallbackFunc=(self._handle_incoming_call
@@ -723,15 +724,18 @@ class GSMCenter:
                                      if options.sms_enabled else None),
             smsStatusReportCallback=self._handle_status_report
         )
-        self._pin = options.pin
-        self._own_number = ''
-        self._is_alive = True
-        self._active_calls = {}
-        self._call_ring_counts = {}
-        self._call_audio_processes = {}
-        self._call_audio_input_pipelines = {}
-        self._call_audio_output_pipelines = {}
-        self._call_recording_processes = {}
+        self._pin: str | None = options.pin
+        self._own_number: str = ''
+        self._store: GSMStore
+        self._is_alive: bool = True
+        self._active_calls: dict[int, Call | IncomingCall] = {}
+        self._call_ring_counts: dict[int, int] = {}
+        self._call_audio_processes: dict[int, subprocess.Popen] = {}
+        self._call_audio_input_pipelines: dict[int, AudioPipeline] = {}
+        self._call_audio_output_pipelines: dict[int, AudioPipeline] = {}
+        self._call_recording_processes: dict[
+            int, tuple[int, subprocess.Popen]] = {}
+        self._loop_thread: Thread | None = None
 
         self._connect()
         self._own_number = self._check_own_number()
@@ -779,6 +783,7 @@ class GSMCenter:
             return True
         self.logger.info(f'connecting to MODEM...')
         try:
+            # noinspection PyTypeChecker
             modem.connect(self._pin, waitingForModemToStartInSeconds=timeout)
         except PinRequiredError:
             self.logger.error('SIM card PIN required.')
@@ -951,14 +956,12 @@ class GSMCenter:
         if call.number:
             return self.normalise_number(call.number), False
         if number := self._query_incoming_call_number():
-            try:
+            with suppress(AttributeError, TypeError):
                 call.number = number
-            except Exception:
-                pass
             return number, True
         return '', False
 
-    def _query_incoming_call_number(self) -> str:
+    def _query_incoming_call_number(self) -> str | None:
         for call in self._query_modem_calls():
             if (call['direction'] == '1' and call['status'] in ('4', '5')
                     and call['number']):
@@ -1020,8 +1023,9 @@ class GSMCenter:
             self._active_calls.pop(mid, None)
             self._call_ring_counts.pop(mid, None)
 
+    @staticmethod
     def _stored_call_is_visible_on_modem(
-            self, stored: StoredPhoneCall, modem_calls: list[dict]) -> bool:
+            stored: StoredPhoneCall, modem_calls: list[dict]) -> bool:
         direction = '0' if stored.type is PhoneCallType.OUTGOING else '1'
         for call in modem_calls:
             if call['direction'] != direction:
@@ -1168,6 +1172,14 @@ class GSMCenter:
                 mid, statuses.FAILED, ended_at=int(time()),
                 extra=dict(error='live call is not available'))
             return
+        if not isinstance(call, IncomingCall):
+            self.logger.warning(
+                f'cannot answer phone call #{mid}: '
+                f'live call is not an incoming call')
+            self._update_phone_call_status(
+                mid, statuses.FAILED, ended_at=int(time()),
+                extra=dict(error='live call is not an incoming call'))
+            return
         self.logger.info(f'answering phone call #{mid}')
         try:
             call.answer()
@@ -1197,7 +1209,8 @@ class GSMCenter:
         self.logger.info(f'hanging up phone call #{mid}')
         try:
             if (stored and stored.type is PhoneCallType.INCOMING
-                    and requested_from in ('RINGING', 'ANSWER_REQUESTED')):
+                    and requested_from in ('RINGING', 'ANSWER_REQUESTED')
+                    and isinstance(call, IncomingCall)):
                 self._reject_ringing_incoming_call(mid, call)
             else:
                 call.hangup()
@@ -1229,11 +1242,9 @@ class GSMCenter:
         self.logger.info(
             f'rejecting ringing incoming phone call #{mid} with AT+CHUP')
         self._modem.write('AT+CHUP')
-        try:
+        with suppress(AttributeError):
             call.ringing = False
             call.active = False
-        except Exception:
-            pass
         if hasattr(self._modem, 'activeCalls') and call.id in (
                 self._modem.activeCalls):
             del self._modem.activeCalls[call.id]
@@ -1519,13 +1530,32 @@ class GSMCenter:
             rid, PhoneCallRecordingStatus.RECORDING,
             extra={'pid': process.pid, 'command': cmd})
 
+    def _check_call_recording_processes(self):
+        if not hasattr(self, '_call_recording_processes'):
+            self._call_recording_processes = {}
+        for mid, entry in list(self._call_recording_processes.items()):
+            rid, process = entry[:2]
+            if process.poll() is None:
+                continue
+            row = self._store.phone_call_recording_db.get(rid)
+            extra = json_loads(row['extra']) if row and row.get('extra') else {}
+            extra['return_code'] = process.returncode
+            extra['error'] = 'recording command exited while call was active'
+            self.logger.error(
+                f'call recording command for call #{mid} exited early '
+                f'with code {process.returncode}')
+            self._store.phone_call_recording_db.update_status(
+                rid, PhoneCallRecordingStatus.FAILED,
+                ended_at=int(time()), extra=extra)
+            self._call_recording_processes.pop(mid, None)
+
     def _stop_call_recording_process(self, mid: int, *, failed: bool = False):
         if not hasattr(self, '_call_recording_processes'):
             self._call_recording_processes = {}
         entry = self._call_recording_processes.pop(mid, None)
         if entry is None:
             return
-        rid, process = entry
+        rid, process = entry[:2]
         stopped_at = int(time())
         if process.poll() is None:
             self.logger.info(f'stopping call recording command for call #{mid}')
@@ -1840,6 +1870,7 @@ class GSMCenter:
         update_sim_status = safe(self._update_sim_card_status)
         process_pending = safe(self.process_pending_smss)
         process_call_requests = safe(self.process_phone_call_requests)
+        check_recordings = safe(self._check_call_recording_processes)
         check_coverage = safe(self.check_network_coverage)
         check_received = safe(self._check_modem_stored_smss)
 
@@ -1865,6 +1896,7 @@ class GSMCenter:
             update_sim_status()
             process_pending()
             process_call_requests()
+            check_recordings()
             now = time()
             if now - last_coverage_check >= coverage_interval:
                 last_coverage_check = now
@@ -1877,7 +1909,7 @@ class GSMCenter:
         info('loop ended')
 
     def join(self):
-        thread: Thread = self._loop_thread
+        thread: Thread | None = self._loop_thread
         if thread is None or not thread.is_alive():
             return
         thread.join()
@@ -1887,7 +1919,8 @@ class GSMCenter:
             return
         self.logger.info('closing...')
         self._is_alive = False
-        self._loop_thread.join()
+        if (thread := self._loop_thread) is not None:
+            thread.join()
         self._stop_all_call_audio_processes()
         self._stop_all_call_audio_input_pipelines()
         self._stop_all_call_audio_output_pipelines()

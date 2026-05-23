@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 
 from subprocess import CompletedProcess
+from subprocess import TimeoutExpired
 from unittest.mock import Mock, patch
 
 import pytest
 
-from app.audio import (AudioPipeline, pcm_frame_bytes, play_audio_sample,
-                       play_pcm_command, record_audio_sample,
+from app.audio import (AudioPipeline, discover_alsa_audio_cards,
+                       pcm_frame_bytes, play_audio_sample,
+                       play_pcm_command, probe_audio_input,
+                       record_audio_sample,
                        record_pcm_command, start_audio_input_command,
                        start_audio_output_command, stop_audio_pipeline)
 from app.main import GSMCenter
@@ -67,6 +70,108 @@ class TestPlayAudioSample:
     def test_requires_output(self):
         with pytest.raises(ValueError, match='no output'):
             play_audio_sample(audio_device(output=''), '/tmp/sample.wav')
+
+
+class TestProbeAudioInput:
+
+    def test_probes_each_rate(self):
+        completed = CompletedProcess([], 0, stdout='', stderr='')
+        with patch('app.audio.subprocess.run',
+                   return_value=completed) as run:
+            results = probe_audio_input(
+                'plughw:3,0', sample_rates=[8000, 48000],
+                backend='arecord')
+
+        assert [r.sample_rate for r in results] == [8000, 48000]
+        assert [r.ok for r in results] == [True, True]
+        assert run.call_args_list[0].args[0] == [
+            'arecord',
+            '-D', 'plughw:3,0',
+            '-f', 'S16_LE',
+            '-r', '8000',
+            '-c', '1',
+            '-d', '1',
+            '-t', 'raw',
+            '/dev/null',
+        ]
+        assert run.call_args_list[1].args[0][6] == '48000'
+
+    def test_records_failed_rate(self):
+        completed = CompletedProcess([], 1, stdout='', stderr='nope')
+        with patch('app.audio.subprocess.run', return_value=completed):
+            result = probe_audio_input(
+                'plughw:3,0', sample_rates=[8000], backend='arecord')[0]
+
+        assert result.ok is False
+        assert result.return_code == 1
+        assert result.stderr == 'nope'
+
+    def test_timeout_output_is_normalised_to_text(self):
+        error = TimeoutExpired(['arecord'], 1)
+        error.stdout = b'partial'
+        error.stderr = b''
+        with patch('app.audio.subprocess.run', side_effect=error):
+            result = probe_audio_input(
+                'plughw:3,0', sample_rates=[8000], backend='arecord')[0]
+
+        assert result.ok is False
+        assert result.stdout == 'partial'
+        assert result.stderr == 'timed out'
+
+    def test_ffmpeg_backend_is_default(self):
+        completed = CompletedProcess([], 0, stdout='', stderr='')
+        with patch('app.audio.subprocess.run',
+                   return_value=completed) as run:
+            result = probe_audio_input(
+                'plughw:3,0', sample_rates=[48000])[0]
+
+        assert result.ok is True
+        assert run.call_args.args[0] == [
+            'ffmpeg',
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-y',
+            '-f', 'alsa',
+            '-acodec', 'pcm_s16le',
+            '-ac', '1',
+            '-ar', '48000',
+            '-i', 'plughw:3,0',
+            '-t', '1',
+            '-f', 'null',
+            '-',
+        ]
+
+
+class TestDiscoverALSAAudioCards:
+
+    def test_groups_capture_and_playback_by_card(self):
+        cards_text = (
+            ' 3 [Device         ]: USB-Audio - USB Audio Device\n'
+            '                      C-Media Electronics Inc. USB Audio Device\n'
+        )
+        capture = CompletedProcess([], 0, stdout=(
+            'card 3: Device [USB Audio Device], device 0: USB Audio '
+            '[USB Audio]\n'
+        ), stderr='')
+        playback = CompletedProcess([], 0, stdout=(
+            'card 3: Device [USB Audio Device], device 0: USB Audio '
+            '[USB Audio]\n'
+        ), stderr='')
+
+        with patch('app.audio.Path.read_text', return_value=cards_text), \
+                patch('app.audio.subprocess.run',
+                      side_effect=[capture, playback]):
+            cards = discover_alsa_audio_cards()
+
+        assert len(cards) == 1
+        card = cards[0]
+        assert card.index == 3
+        assert card.id == 'Device'
+        assert card.name == 'USB-Audio - USB Audio Device'
+        assert card.description == (
+            'C-Media Electronics Inc. USB Audio Device')
+        assert card.inputs[0].alsa_device == 'plughw:3,0'
+        assert card.outputs[0].alsa_device == 'plughw:3,0'
 
 
 class TestPCMStreamCommands:

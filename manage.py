@@ -363,6 +363,147 @@ def test_audio_play(name, path):
     print(' '.join(result.command))
 
 
+@cli.command(short_help='Probe an ALSA input device and suggest config.')
+@click.argument('name', required=False, default='audio_device',
+                metavar='[NAME]')
+@click.option('--input', 'input_', default='', metavar='ALSA_DEVICE',
+              help='ALSA capture device to probe, e.g. plughw:3,0.')
+@click.option('--output', default='', metavar='ALSA_DEVICE',
+              help='ALSA playback device to include in the suggestion.')
+@click.option('--rates', default='8000,16000,44100,48000',
+              show_default=True,
+              help='Comma-separated sample rates to test.')
+@click.option('--channels', type=int, default=1, show_default=True,
+              help='Number of capture channels to test.')
+@click.option('--format', 'format_', default='s16le', show_default=True,
+              help='PCM sample format to test.')
+@click.option('--backend', type=click.Choice(['ffmpeg', 'arecord']),
+              default='ffmpeg', show_default=True,
+              help='Capture backend to probe.')
+def probe_audio_device(name, input_, output, rates, channels, format_, backend):
+    """Probe capture rates and print a suggested AUDIO_DEVICES block.
+
+    NAME is only the AUDIO_DEVICES key to suggest, such as gsm_usb. It does not
+    need to exist in config.yaml. If --input is omitted and NAME already exists,
+    the configured input is probed.
+    """
+    from app.audio import probe_audio_input
+    from app.main import GSMCenter
+
+    configured = GSMCenter.AudioDeviceOptions.get(name)
+    input_ = input_ or (configured.input if configured else '')
+    output = output or (configured.output if configured else input_)
+    if not input_:
+        raise click.ClickException(
+            'input device is required; pass --input or configure NAME')
+    try:
+        sample_rates = [int(r.strip()) for r in rates.split(',') if r.strip()]
+    except ValueError:
+        raise click.ClickException('rates must be comma-separated integers')
+    if not sample_rates:
+        raise click.ClickException('at least one sample rate is required')
+
+    results = probe_audio_input(
+        input_, sample_rates=sample_rates, channels=channels, format_=format_,
+        backend=backend)
+    for result in results:
+        status = 'ok' if result.ok else 'failed'
+        print(f'{result.sample_rate}: {status}')
+        if not result.ok and result.stderr:
+            print(f'  {result.stderr.strip().splitlines()[-1]}')
+
+    supported = [result.sample_rate for result in results if result.ok]
+    if not supported:
+        raise click.ClickException('no tested sample rate worked')
+    preferred = _preferred_audio_sample_rate(supported)
+    print()
+    print('Suggested AUDIO_DEVICES block:')
+    print(f'  {name}:')
+    print(f'    input: "{input_}"')
+    print(f'    output: "{output}"')
+    print(f'    sample_rate: {preferred}')
+    print(f'    channels: {channels}')
+    print(f'    format: {format_}')
+    print('    frame_ms: 20')
+    if backend == 'ffmpeg':
+        print()
+        print('Suggested recording command input flags:')
+        print(f'  -f alsa -ac {channels} -ar {preferred} -i {input_}')
+
+
+@cli.command(short_help='Discover ALSA sound cards for audio config.')
+@click.option('--name', default='audio_device', show_default=True,
+              help='AUDIO_DEVICES key to use in the suggested block.')
+def discover_audio_devices(name):
+    """List ALSA cards and suggest input/output device strings."""
+    from app.audio import discover_alsa_audio_cards
+
+    cards = discover_alsa_audio_cards()
+    if not cards:
+        raise click.ClickException('no ALSA audio cards found')
+    recommended = _recommended_audio_card(cards)
+    if recommended:
+        print(
+            f'recommended card: {recommended.index} '
+            f'({recommended.id or recommended.name})')
+        print()
+    for card in cards:
+        marker = '*' if recommended and card.index == recommended.index else ''
+        print(
+            f'card {card.index}{marker}: '
+            f'{card.id or "-"} | {card.name or "-"}')
+        if card.description:
+            print(f'  {card.description}')
+        if card.inputs:
+            print('  inputs:')
+            for endpoint in card.inputs:
+                print(
+                    f'    {endpoint.alsa_device} | '
+                    f'{endpoint.device_name} [{endpoint.stream_name}]')
+        else:
+            print('  inputs: none')
+        if card.outputs:
+            print('  outputs:')
+            for endpoint in card.outputs:
+                print(
+                    f'    {endpoint.alsa_device} | '
+                    f'{endpoint.device_name} [{endpoint.stream_name}]')
+        else:
+            print('  outputs: none')
+        if card.inputs or card.outputs:
+            input_ = card.inputs[0].alsa_device if card.inputs else ''
+            output = card.outputs[0].alsa_device if card.outputs else ''
+            print('  suggested AUDIO_DEVICES block:')
+            print(f'    {name}:')
+            if input_:
+                print(f'      input: "{input_}"')
+            if output:
+                print(f'      output: "{output}"')
+            print('      sample_rate: 48000')
+            print('      channels: 1')
+            print('      format: s16le')
+            print('      frame_ms: 20')
+        print()
+
+
+def _recommended_audio_card(cards):
+    useful = [card for card in cards if card.inputs and card.outputs]
+    if not useful:
+        return None
+    for card in useful:
+        text = ' '.join([card.id, card.name, card.description]).lower()
+        if 'usb' in text:
+            return card
+    return useful[0]
+
+
+def _preferred_audio_sample_rate(sample_rates):
+    for rate in (8000, 16000, 48000, 44100):
+        if rate in sample_rates:
+            return rate
+    return sample_rates[0]
+
+
 @cli.command(short_help='Run a tiny operability check.')
 def test():
     """For making sure the project is operable."""

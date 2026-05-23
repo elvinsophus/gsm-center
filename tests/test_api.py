@@ -109,6 +109,16 @@ class TestAudioSmokeTests:
 
         assert resp.status_code == 404
 
+    def test_play_audio_device_requires_path(self, client):
+        from app.main import GSMCenter
+        device = GSMCenter.AudioDeviceOptions(
+            'gsm_usb', 'plughw:3,0', 'plughw:3,0', 8000, 1, 's16le', 20)
+
+        with patch('app.api.AudioDeviceOptions.get', return_value=device):
+            resp = client.post('/audio/devices/gsm_usb/test-play', json={})
+
+        assert resp.status_code == 400
+
 
 VALID_SMS_BODY = {
     'sender': '+8613500000001',

@@ -4,6 +4,196 @@ gsm-center manages GSM modems for SMS and phone-call workflows. It exposes a
 small REST API for queuing work, while the modem listener process owns the
 serial devices and performs the actual modem operations.
 
+## Quick Start
+
+### 1. Install
+
+On the Linux machine that has the GSM modem attached:
+
+```bash
+git clone https://github.com/elvinsophus/gsm-center.git
+cd gsm-center
+./setup.sh
+```
+
+`setup.sh` creates a Python virtual environment, installs dependencies, and
+creates `config.yaml` if needed. When run in an interactive terminal, it asks
+for the modem serial port, phone number, SMS/call choices, and can help choose
+an ALSA sound card for call audio. Use `--reconfigure` to run the wizard again,
+or `--no-config-wizard` to copy the template without prompts.
+
+If you are setting up manually:
+
+```bash
+python3 -m venv venv
+. venv/bin/activate
+pip install -r requirements.txt
+cp config.yaml.template config.yaml
+```
+
+Install system tools for audio discovery, smoke tests, and MP3 recording:
+
+```bash
+sudo apt install alsa-utils ffmpeg
+```
+
+### 2. Find The GSM Serial Port
+
+If you used the interactive setup wizard, this may already be configured. To
+check manually, plug in the modem and inspect serial devices:
+
+```bash
+ls /dev/ttyUSB*
+dmesg | grep ttyUSB
+```
+
+Choose the modem AT-command port, then put it under `DEVICES` in
+`config.yaml`.
+
+### 3. Configure SMS And Calls
+
+If you skipped the wizard, start with a minimal `config.yaml`:
+
+```yaml
+DEFAULT_MOBILE_REGION: CN
+SQLITE3_FILE: db.sqlite3
+
+DEVICES:
+  /dev/ttyUSB5:
+    baudrate: 115200
+    pin: "1234"
+    own_number: "+8613512345678"
+
+    sms:
+      enabled: yes
+
+    calls:
+      enabled: yes
+```
+
+The phone number should be in E.164 form. For example, a China number should
+look like `+8613512345678`.
+
+### 4. Find And Probe Audio Devices
+
+The setup wizard can do this for you. To run the same steps manually, first
+list ALSA sound cards:
+
+```bash
+. venv/bin/activate
+python manage.py discover-audio-devices --name gsm_usb
+```
+
+The command prints capture/playback endpoints and suggests `AUDIO_DEVICES`
+blocks. Pick the sound card connected to the GSM module's audio jack.
+
+Then probe the selected ALSA device:
+
+```bash
+python manage.py probe-audio-device gsm_usb --input plughw:3,0 --output plughw:3,0
+```
+
+Use the suggested block in `config.yaml`, for example:
+
+```yaml
+AUDIO_DEVICES:
+  gsm_usb:
+    input: "plughw:3,0"
+    output: "plughw:3,0"
+    sample_rate: 48000
+    channels: 1
+    format: s16le
+    frame_ms: 20
+
+DEVICES:
+  /dev/ttyUSB5:
+    calls:
+      enabled: yes
+      audio_device: gsm_usb
+```
+
+The probe defaults to `ffmpeg` because that matches the recommended MP3
+recording path. Use `--backend arecord` when you want to check the raw PCM path
+used by WebSocket input streams.
+
+### 5. Optional Call Recording
+
+Recordings are disabled unless configured. Enable them under the device's
+`calls.recording` block:
+
+```yaml
+DEVICES:
+  /dev/ttyUSB5:
+    calls:
+      enabled: yes
+      audio_device: gsm_usb
+      recording:
+        enabled: yes
+        directory: "recordings"
+        format: mp3
+        command: "ffmpeg -y -f alsa -ac 1 -ar 48000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
+        env: {}
+```
+
+Use the sample rate recommended by `probe-audio-device`.
+
+### 6. Run The Service
+
+Run the API and modem loop in separate terminals:
+
+```bash
+. venv/bin/activate
+./run_api.sh 25601 venv
+```
+
+```bash
+. venv/bin/activate
+./run_loop.sh
+```
+
+Or run the loop for one modem only:
+
+```bash
+python manage.py loop /dev/ttyUSB5
+```
+
+The API queues work in SQLite. The loop owns the modem serial port and performs
+SMS/call actions.
+
+### 7. Smoke Test
+
+Check active own numbers:
+
+```bash
+curl http://127.0.0.1:25601/own-numbers
+```
+
+Send an SMS:
+
+```bash
+curl -X POST http://127.0.0.1:25601/sms \
+  -H 'Content-Type: application/json' \
+  -d '{"sender":"+8613512345678","recipient":"+8613812345678","content":"hello"}'
+```
+
+Queue an outgoing call:
+
+```bash
+python manage.py call +8613512345678 +8613812345678
+python manage.py list-phone-calls +8613512345678
+```
+
+For incoming ringing calls, `answer-call` and `hangup-call` may omit the call
+ID when exactly one call is eligible:
+
+```bash
+python manage.py answer-call
+python manage.py hangup-call
+```
+
+For a ringing incoming call, `hangup-call` rejects the call without answering
+it. Some carriers present this to the caller as busy.
+
 ## Runtime Shape
 
 The normal deployment runs two processes:
@@ -54,9 +244,11 @@ python manage.py list-sms-dialog NUM1 NUM2 -n 10
 python manage.py preview-sms-dialogs [NUM] -n 10
 python manage.py list-phone-calls [OWN_NUMBER] -n 10
 python manage.py call CALLER RECIPIENT
-python manage.py answer-call CALL_ID
-python manage.py hangup-call CALL_ID
+python manage.py answer-call [CALL_ID]
+python manage.py hangup-call [CALL_ID]
 python manage.py list-audio-devices
+python manage.py discover-audio-devices --name gsm_usb
+python manage.py probe-audio-device [NAME] --input DEV --output DEV
 python manage.py test-audio-record NAME PATH --seconds 3  # NAME: AUDIO_DEVICES key; PATH: output WAV
 python manage.py test-audio-play NAME PATH                 # NAME: AUDIO_DEVICES key; PATH: input WAV
 ```
@@ -100,7 +292,7 @@ DEVICES:
       recording:
         enabled: yes
         directory: "recordings"
-        command: "ffmpeg -y -f alsa -ac 1 -ar 8000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
+        command: "ffmpeg -y -f alsa -ac 1 -ar 48000 -i {CALL_AUDIO_INPUT} -codec:a libmp3lame -b:a 32k {CALL_RECORDING_FILE}"
         format: mp3
         env: {}
 ```

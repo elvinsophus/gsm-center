@@ -18,6 +18,8 @@ configured through hooks, commands, and future audio APIs.
 ```bash
 # Initial setup (creates venv, installs deps, copies config template)
 ./setup.sh
+# Run the config/audio wizard again
+./setup.sh --reconfigure
 
 # Copy and edit configuration
 cp config.yaml.template config.yaml
@@ -81,6 +83,9 @@ python manage.py call CALLER RECIPIENT             # Queue outgoing phone call
 python manage.py answer-call [CALL_ID]             # Queue answer request; ID optional if unambiguous
 python manage.py hangup-call [CALL_ID]             # Queue hangup/reject request; ID optional if unambiguous
 python manage.py list-audio-devices                # List configured audio devices
+python manage.py discover-audio-devices            # List ALSA cards/endpoints and suggest AUDIO_DEVICES blocks
+python manage.py probe-audio-device [NAME] --input DEV
+                                                    # Probe ALSA capture rates and suggest AUDIO_DEVICES config; defaults to ffmpeg backend
 python manage.py test-audio-record NAME PATH       # NAME is an AUDIO_DEVICES key; PATH is output WAV
 python manage.py test-audio-play NAME PATH         # NAME is an AUDIO_DEVICES key; PATH is input WAV
 python manage.py test                              # Healthcheck (prints "Hello world!")
@@ -308,6 +313,9 @@ Keep audio generic:
   adapter points for STT, TTS, bridges, or custom media processors.
 - Recording is modeled as a managed media session with metadata in
   `phone_call_recording`, not as fixed built-in call behavior.
+- Recording commands are monitored while calls remain active. If a recording
+  process exits unexpectedly, its `phone_call_recording` row is marked `FAILED`
+  with the return code and command metadata.
 - WebSocket audio streams carry raw PCM frames using `AUDIO_DEVICES`
   `format`, `sample_rate`, `channels`, and `frame_ms`. Playback streams enforce
   one active owner per configured audio device output.

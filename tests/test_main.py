@@ -4,6 +4,8 @@ from json import loads as json_loads
 from unittest.mock import Mock, patch
 
 from app.audio import AudioPipeline
+from gsmmodem.modem import IncomingCall
+
 from app.main import (GSMCenter, GSMStore, ReceivedSMSPartInfo,
                       ReceivedSMSPartStatus, ReceivedSMSStatus)
 
@@ -46,14 +48,14 @@ class TestPhoneCallRequests:
         db.update_status(
             mid, 'HANGUP_REQUESTED',
             extra={'hangup_requested_from': 'RINGING'})
-        call = Mock()
-
         center = object.__new__(GSMCenter)
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
+        center._modem = Mock()
+        call = IncomingCall(
+            center._modem, OTHER_NUMBER, None, None, 1, 'VOICE')
         center._active_calls = {mid: call}
         center._call_ring_counts = {mid: 1}
-        center._modem = Mock()
         center._modem.activeCalls = {call.id: call}
         center._options = GSMCenter.DeviceOptions(call_enabled=True)
         center._call_audio_processes = {}
@@ -73,10 +75,66 @@ class TestPhoneCallRequests:
             'ended_role': 'dialee',
         }
         center._modem.write.assert_called_once_with('AT+CHUP')
-        call.hangup.assert_not_called()
         assert call.ringing is False
         assert call.active is False
         assert call.id not in center._modem.activeCalls
+
+    def test_ringing_hangup_with_generic_call_falls_back_to_hangup(
+            self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('INCOMING', OWN_NUMBER, OTHER_NUMBER,
+                        'HANGUP_REQUESTED')
+        db.update_status(
+            mid, 'HANGUP_REQUESTED',
+            extra={'hangup_requested_from': 'RINGING'})
+        call = Mock()
+
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {mid: call}
+        center._call_ring_counts = {mid: 1}
+        center._modem = Mock()
+        center._options = GSMCenter.DeviceOptions(call_enabled=True)
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+
+        center._hangup_phone_call(mid)
+
+        call.hangup.assert_called_once_with()
+        center._modem.write.assert_not_called()
+
+    def test_answer_with_generic_call_marks_failed(self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('INCOMING', OWN_NUMBER, OTHER_NUMBER,
+                        'ANSWER_REQUESTED')
+        call = Mock()
+
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {mid: call}
+        center._call_ring_counts = {mid: 1}
+        center._modem = Mock()
+        center._options = GSMCenter.DeviceOptions(call_enabled=True)
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+
+        center._answer_phone_call(mid)
+
+        row = db.get(mid)
+        assert row['status'] == 'FAILED'
+        assert json_loads(row['extra']) == {
+            'error': 'live call is not an incoming call'}
+        call.answer.assert_not_called()
 
     def test_incoming_call_without_caller_id_is_stored(self, fresh_db):
         center = object.__new__(GSMCenter)
@@ -487,6 +545,29 @@ class TestCallRecording:
         recording = center._store.get_phone_call_recording(rid)
         assert recording.status is GSMCenter.PhoneCallRecordingStatus.COMPLETED
         assert recording.extra['return_code'] == 0
+
+    def test_early_recording_exit_is_marked_failed(self, fresh_db, tmp_path):
+        center = self.make_center(tmp_path)
+        mid = GSMStore.phone_call_db.insert(
+            'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'ANSWERED')
+        rid = GSMStore.phone_call_recording_db.insert(
+            mid, str(tmp_path / 'call.mp3'), 'mp3',
+            GSMCenter.PhoneCallRecordingStatus.RECORDING,
+            started_at=1700000000,
+            extra={'pid': 1234, 'command': './record call.mp3'})
+        process = Mock()
+        process.poll.return_value = 1
+        process.returncode = 1
+        center._call_recording_processes[mid] = (rid, process)
+
+        center._check_call_recording_processes()
+
+        recording = center._store.get_phone_call_recording(rid)
+        assert recording.status is GSMCenter.PhoneCallRecordingStatus.FAILED
+        assert recording.ended_at is not None
+        assert recording.extra['return_code'] == 1
+        assert 'exited while call was active' in recording.extra['error']
+        assert mid not in center._call_recording_processes
 
 
 class TestMultipartSMS:

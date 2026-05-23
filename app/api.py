@@ -40,9 +40,12 @@ def test_record_audio_device(name):
         return 'invalid argument', 400
     if not isinstance(args, dict):
         return 'invalid argument', 400
+    path = args.get('path')
+    if not isinstance(path, str) or not path:
+        return 'parameter `path` not provided', 400
     try:
         result = record_audio_sample(
-            device, args.get('path'), int(args.get('seconds', 3)))
+            device, path, int(args.get('seconds', 3)))
     except (TypeError, ValueError) as e:
         return str(e), 400
     except (CalledProcessError, TimeoutExpired, OSError) as e:
@@ -58,8 +61,11 @@ def test_play_audio_device(name):
         return 'invalid argument', 400
     if not isinstance(args, dict):
         return 'invalid argument', 400
+    path = args.get('path')
+    if not isinstance(path, str) or not path:
+        return 'parameter `path` not provided', 400
     try:
-        result = play_audio_sample(device, args.get('path'))
+        result = play_audio_sample(device, path)
     except (TypeError, ValueError) as e:
         return str(e), 400
     except (CalledProcessError, TimeoutExpired, OSError) as e:
