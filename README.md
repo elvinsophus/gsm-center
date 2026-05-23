@@ -304,3 +304,12 @@ Legacy flat keys such as `sms_enabled`, `call_enabled`,
 
 - [Multipart SMS Handling](docs/multipart-sms.md)
 - [Phone Calls, Audio Streams, and Recording Roadmap](docs/call-audio-roadmap.md)
+
+## License
+
+Copyright (C) 2026 Elvin SEAH
+
+Unless otherwise noted, gsm-center source files are licensed under the GNU
+General Public License v3.0 or later: see [LICENSE](LICENSE).
+
+SPDX-License-Identifier: GPL-3.0-or-later
