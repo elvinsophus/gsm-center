@@ -157,6 +157,17 @@ Run the API and modem loop in separate terminals:
 ./run_api.sh 25601 venv
 ```
 
+By default the API binds to `127.0.0.1`. If another machine or a Docker
+container needs to reach it, bind to an address reachable from that network:
+
+```bash
+./run_api.sh 25601 venv 0.0.0.0
+# or:
+GSM_CENTER_API_HOST=0.0.0.0 ./run_api.sh 25601 venv
+```
+
+Only expose the API on a trusted network or behind your own access controls.
+
 ```bash
 . venv/bin/activate
 ./run_loop.sh
@@ -222,6 +233,9 @@ The API is served by `run_api.sh` through Gunicorn with exactly one threaded
 worker, so HTTP routes and WebSocket audio streams share one application
 process. WebSocket routes may open ALSA audio devices, but they still do not
 instantiate `GSMCenter` or open modem serial ports.
+`run_api.sh` binds to `127.0.0.1` by default; pass a third argument or set
+`GSM_CENTER_API_HOST` when the API must be reachable from Docker or another
+host.
 
 ## Current API
 

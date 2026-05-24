@@ -739,7 +739,7 @@ class GSMCenter:
         self._own_number: str = ''
         self._store: GSMStore
         self._is_alive: bool = True
-        self._active_calls: dict[int, Call | IncomingCall] = {}
+        self._active_calls: dict[int, Call | IncomingCall | None] = {}
         self._call_ring_counts: dict[int, int] = {}
         self._call_audio_processes: dict[int, subprocess.Popen] = {}
         self._call_audio_input_pipelines: dict[int, AudioPipeline] = {}
@@ -1024,7 +1024,12 @@ class GSMCenter:
                 self._active_calls.pop(mid, None)
                 self._call_ring_counts.pop(mid, None)
                 continue
-            if self._stored_call_is_visible_on_modem(stored, modem_calls):
+            modem_call = self._modem_call_for_stored_call(stored, modem_calls)
+            if modem_call:
+                if (stored.status is PhoneCallStatus.DIALING
+                        and modem_call['status'] == '0'):
+                    self._update_phone_call_status(
+                        mid, PhoneCallStatus.ANSWERED, started_at=int(time()))
                 continue
             self.logger.info(f'phone call #{mid} is no longer active')
             self._update_phone_call_status(
@@ -1035,18 +1040,18 @@ class GSMCenter:
             self._call_ring_counts.pop(mid, None)
 
     @staticmethod
-    def _stored_call_is_visible_on_modem(
-            stored: StoredPhoneCall, modem_calls: list[dict]) -> bool:
+    def _modem_call_for_stored_call(
+            stored: StoredPhoneCall, modem_calls: list[dict]) -> dict | None:
         direction = '0' if stored.type is PhoneCallType.OUTGOING else '1'
         for call in modem_calls:
             if call['direction'] != direction:
                 continue
             if stored.other_number and call['number']:
                 if stored.other_number == call['number']:
-                    return True
+                    return call
                 continue
-            return True
-        return False
+            return call
+        return None
 
     def _clear_stale_phone_calls(self):
         if not self._options.call_enabled:
@@ -1103,6 +1108,14 @@ class GSMCenter:
                          else wait_for_answer),
                 callStatusUpdateCallbackFunc=(
                     self._call_status_callback(mid)))
+        except GSMTimeout as e:
+            if self._track_outgoing_call_after_dial_timeout(
+                    mid, recipient, e):
+                return mid
+            logger.error(f'phone call #{mid} failed due to {e!r}')
+            self._update_phone_call_status(
+                mid, statuses.FAILED, ended_at=int(time()),
+                extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
         except Exception as e:
             logger.error(f'phone call #{mid} failed due to {e!r}')
             self._update_phone_call_status(
@@ -1133,6 +1146,31 @@ class GSMCenter:
                 self._call_ring_counts.pop(mid, None)
         return callback
 
+    def _track_outgoing_call_after_dial_timeout(
+            self, mid: int, recipient: str, exc: Exception) -> bool:
+        stored = self._store.get_phone_call(mid)
+        if not stored:
+            return False
+        modem_call = self._modem_call_for_stored_call(
+            stored, self._query_modem_calls())
+        if not modem_call:
+            return False
+        self.logger.warning(
+            f'phone call #{mid} dial command timed out, but the call is '
+            f'visible on the modem; continuing to monitor it')
+        self._active_calls[mid] = None
+        self._call_ring_counts[mid] = 1
+        self._merge_phone_call_extra(
+            mid, dial_timeout=repr(exc),
+            dial_timeout_recovered=True,
+            dial_timeout_recipient=recipient,
+            modem_call_index=modem_call.get('index', ''),
+            modem_call_status=modem_call.get('status', ''))
+        if modem_call['status'] == '0':
+            self._update_phone_call_status(
+                mid, PhoneCallStatus.ANSWERED, started_at=int(time()))
+        return True
+
     def process_phone_call_requests(self):
         if not self._options.call_enabled:
             return
@@ -1153,6 +1191,14 @@ class GSMCenter:
                     self.simplify_number(row['other_number']),
                     callStatusUpdateCallbackFunc=(
                         self._call_status_callback(mid)))
+            except GSMTimeout as e:
+                if self._track_outgoing_call_after_dial_timeout(
+                        mid, row['other_number'], e):
+                    continue
+                logger.error(f'phone call #{mid} failed due to {e!r}')
+                self._update_phone_call_status(
+                    mid, statuses.FAILED, ended_at=int(time()),
+                    extra=dict(exc=repr(e), tb=format_tb(exc_info()[2])))
             except Exception as e:
                 logger.error(f'phone call #{mid} failed due to {e!r}')
                 self._update_phone_call_status(
@@ -1205,7 +1251,8 @@ class GSMCenter:
 
     def _hangup_phone_call(self, mid: int):
         statuses = PhoneCallStatus
-        if not (call := self._active_calls.get(mid)):
+        call = self._active_calls.get(mid, _EMPTY_ARG)
+        if call is _EMPTY_ARG:
             self.logger.warning(
                 f'cannot hang up phone call #{mid}: '
                 f'live call is not available')
@@ -1223,6 +1270,8 @@ class GSMCenter:
                     and requested_from in ('RINGING', 'ANSWER_REQUESTED')
                     and isinstance(call, IncomingCall)):
                 self._reject_ringing_incoming_call(mid, call)
+            elif call is None:
+                self._hangup_modem_phone_call(mid)
             else:
                 call.hangup()
         except Exception as e:
@@ -1248,6 +1297,12 @@ class GSMCenter:
             self._update_phone_call_status(
                 mid, statuses.ENDED, ended_at=int(time()),
                 extra=extra)
+
+    def _hangup_modem_phone_call(self, mid: int):
+        self.logger.info(
+            f'hanging up phone call #{mid} with AT+CHUP; '
+            f'live call object is not available')
+        self._modem.write('AT+CHUP')
 
     def _reject_ringing_incoming_call(self, mid: int, call: IncomingCall):
         self.logger.info(

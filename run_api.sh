@@ -19,8 +19,14 @@ else
     venv="$2"
 fi
 
+if [[ -z "$3" ]]; then
+    host="${GSM_CENTER_API_HOST:-127.0.0.1}"
+else
+    host="$3"
+fi
+
 source "${venv}/bin/activate" && exec gunicorn \
-    --bind "127.0.0.1:${port}" \
+    --bind "${host}:${port}" \
     --workers 1 \
     --worker-class gthread \
     --threads "${GSM_CENTER_API_THREADS:-8}" \

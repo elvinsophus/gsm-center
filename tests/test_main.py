@@ -4,7 +4,7 @@ from json import loads as json_loads
 from unittest.mock import Mock, patch
 
 from app.audio import AudioPipeline
-from gsmmodem.modem import IncomingCall
+from gsmmodem.modem import IncomingCall, TimeoutException
 
 from app.main import (GSMCenter, GSMStore, ReceivedSMSPartInfo,
                       ReceivedSMSPartStatus, ReceivedSMSStatus)
@@ -107,6 +107,36 @@ class TestPhoneCallRequests:
 
         call.hangup.assert_called_once_with()
         center._modem.write.assert_not_called()
+
+    def test_outgoing_hangup_without_call_object_uses_modem_hangup(
+            self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('OUTGOING', OWN_NUMBER, OTHER_NUMBER,
+                        'HANGUP_REQUESTED')
+
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {mid: None}
+        center._call_ring_counts = {mid: 1}
+        center._modem = Mock()
+        center._options = GSMCenter.DeviceOptions(call_enabled=True)
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+
+        center._hangup_phone_call(mid)
+
+        row = db.get(mid)
+        assert row['status'] == 'ENDED'
+        assert json_loads(row['extra']) == {
+            'ended_by': 'local',
+            'ended_role': 'caller',
+        }
+        center._modem.write.assert_called_once_with('AT+CHUP')
 
     def test_answer_with_generic_call_marks_failed(self, fresh_db):
         db = GSMStore.phone_call_db
@@ -302,6 +332,69 @@ class TestPhoneCallStartupCleanup:
             'ended_reason': 'remote_hangup_or_modem_cleared_call'}
         assert mid not in center._active_calls
         assert mid not in center._call_ring_counts
+
+    def test_refresh_active_phone_calls_marks_visible_dialing_call_answered(
+            self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('OUTGOING', OWN_NUMBER, OTHER_NUMBER, 'DIALING')
+
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {mid: None}
+        center._call_ring_counts = {mid: 1}
+        center._modem = Mock()
+        center._modem.write.return_value = [
+            '+CLCC: 1,0,0,0,0,"12025550122",145',
+            'OK',
+        ]
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        center._options = GSMCenter.DeviceOptions(call_enabled=True)
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+
+        center._refresh_active_phone_calls()
+
+        row = db.get(mid)
+        assert row['status'] == 'ANSWERED'
+        assert row['started_at'] is not None
+        assert mid in center._active_calls
+
+    def test_outgoing_dial_timeout_visible_on_modem_keeps_call_active(
+            self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('OUTGOING', OWN_NUMBER, OTHER_NUMBER, 'CREATED')
+
+        center = object.__new__(GSMCenter)
+        center._options = GSMCenter.DeviceOptions(call_enabled=True)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {}
+        center._call_ring_counts = {}
+        center._modem = Mock()
+        center._modem.dial.side_effect = TimeoutException()
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+        center._query_modem_calls = Mock(return_value=[dict(
+            index='1', direction='0', status='3', mode='0',
+            multiparty='0', number=OTHER_NUMBER, ton='145')])
+
+        center.process_phone_call_requests()
+
+        row = db.get(mid)
+        extra = json_loads(row['extra'])
+        assert row['status'] == 'DIALING'
+        assert extra['dial_timeout_recovered'] is True
+        assert extra['modem_call_status'] == '3'
+        assert center._active_calls[mid] is None
+        assert center._call_ring_counts[mid] == 1
 
 
 class TestPhoneCallHooks:

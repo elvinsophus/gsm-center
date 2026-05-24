@@ -25,8 +25,10 @@ configured through hooks, commands, and future audio APIs.
 cp config.yaml.template config.yaml
 # Edit config.yaml: add device serial ports, SIM PINs, own phone numbers
 
-# Run REST API (default port 25601)
-./run_api.sh [PORT] [VENV_DIR]
+# Run REST API (default host 127.0.0.1, default port 25601)
+./run_api.sh [PORT] [VENV_DIR] [HOST]
+# Or:
+GSM_CENTER_API_HOST=0.0.0.0 ./run_api.sh 25601 venv
 # Or directly:
 source venv/bin/activate && python run_api.py --host 127.0.0.1 --port 25601
 
@@ -57,6 +59,9 @@ open configured ALSA audio devices, but they must not open GSM modem serial
 ports. `run_api.sh` uses Gunicorn with exactly one threaded worker so HTTP and
 WebSocket routes live in one application process; do not increase the worker
 count unless shared in-memory audio ownership is moved to an external lock.
+The API binds to `127.0.0.1` by default. Use `run_api.sh`'s third argument or
+`GSM_CENTER_API_HOST` to bind to an address reachable from Docker or another
+trusted host.
 
 ## Tests
 
