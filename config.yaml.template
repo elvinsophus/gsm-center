@@ -1,5 +1,8 @@
 DEFAULT_MOBILE_REGION:  #
 
+CONTACTS:
+  #alice: "+8613512345678"
+
 AUDIO_DEVICES:
   #gsm_usb:
     #input:  # ALSA capture device, e.g. plughw:3,0
@@ -16,13 +19,15 @@ DEVICES:
     #own_number:   # own phone number, e.g. '+8613512345678'
 
     #sms:
-      #enabled:  # whether SMSs are enabled, e.g. yes
+      #enabled:  # whether SMSes are enabled, e.g. yes
       #on_received:
         #command:  # command to execute when SMS received (variables: SMS_SENDER, SMS_RECIPIENT, SMS_CONTENT, SMS_TIMESTAMP, SMS_TIME_STR)
         #env:  # environment variables for SMS received command
 
     #calls:
       #enabled:  # whether calls are enabled, e.g. yes
+      #outgoing:
+        #answer_timeout:  # hang up unanswered outgoing calls after this many seconds; 0 disables it
       #audio_device:  # configured AUDIO_DEVICES key, e.g. gsm_usb
       #hooks:
         #received:

@@ -6,7 +6,8 @@ from .audio import (AudioCommandResult, play_audio_sample,
                     record_audio_sample)
 from .main import (AudioDeviceOptions, GSMStore, PhoneCallRecordingStatus,
                    PhoneCallStatus, PhoneCallType, StoredPhoneCall,
-                   StoredPhoneCallRecording)
+                   StoredPhoneCallRecording, contact_alias_for_number,
+                   ContactBook)
 
 
 bp = Blueprint('index', __name__)
@@ -15,6 +16,51 @@ bp = Blueprint('index', __name__)
 @bp.route('/own-numbers', methods=['GET'])
 def list_senders():
     return jsonify(GSMStore.list_active_own_numbers())
+
+
+@bp.route('/contacts', methods=['GET'])
+def list_contacts():
+    try:
+        return jsonify(ContactBook.list())
+    except ValueError as e:
+        return str(e), 400
+
+
+@bp.route('/contacts', methods=['POST', 'PUT'])
+def upsert_contact():
+    if not (args := request.json):
+        return 'invalid argument', 400
+    if not isinstance(args, dict):
+        return 'invalid argument', 400
+    if not (alias := args.get('alias')):
+        return 'parameter `alias` not provided', 400
+    if not (number := args.get('phone_number') or args.get('number')):
+        return 'parameter `phone_number` not provided', 400
+    try:
+        ContactBook.upsert(alias, number)
+        alias = ContactBook.normalise_alias(alias)
+        contacts = ContactBook.list()
+        for saved_alias, phone_number in contacts.items():
+            if saved_alias.lower() == alias.lower():
+                return jsonify(dict(
+                    alias=saved_alias, phone_number=phone_number))
+        return f'contact alias {alias!r} not found after saving', 500
+    except ValueError as e:
+        return str(e), 400
+    except Exception as e:
+        return str(e), 500
+
+
+@bp.route('/contacts/<alias>', methods=['DELETE'])
+def delete_contact(alias):
+    try:
+        if not ContactBook.delete(alias):
+            return f'contact alias {alias!r} not found', 404
+    except ValueError as e:
+        return str(e), 400
+    except Exception as e:
+        return str(e), 500
+    return jsonify(dict(alias=alias, deleted=True))
 
 
 @bp.route('/audio/devices', methods=['GET'])
@@ -224,9 +270,13 @@ def _phone_call_to_json(call: StoredPhoneCall) -> dict:
         type=call.type.name,
         time=_datetime_to_timestamp(call.time),
         own_number=call.own_number,
+        own_number_alias=contact_alias_for_number(call.own_number),
         other_number=call.other_number,
+        other_number_alias=contact_alias_for_number(call.other_number),
         caller=call.caller,
+        caller_alias=contact_alias_for_number(call.caller),
         recipient=call.recipient,
+        recipient_alias=contact_alias_for_number(call.recipient),
         status=call.status.name,
         started_at=_datetime_to_timestamp(call.started_at),
         ended_at=_datetime_to_timestamp(call.ended_at),

@@ -37,6 +37,9 @@ class TestDeviceOptions:
             },
             'calls': {
                 'enabled': True,
+                'outgoing': {
+                    'answer_timeout': 45,
+                },
                 'audio_device': 'gsm_usb',
                 'audio': {
                     'command': './call-audio.sh',
@@ -90,6 +93,7 @@ class TestDeviceOptions:
 
         assert options.sms_enabled is True
         assert options.call_enabled is True
+        assert options.outgoing_answer_timeout == 45
         assert options.audio_device == 'gsm_usb'
         assert options.on_sms_received == './sms.sh'
         assert options.on_sms_received_env == {'A': '1'}

@@ -13,11 +13,13 @@ def pytest_configure(config):
 @pytest.fixture
 def fresh_db(monkeypatch):
     """Redirect all DB operations to a fresh in-memory SQLite database."""
-    from app.db import (BaseDB, SIMCardDB, PendingSMSDB, SmsDB,
+    from app.db import (BaseDB, SIMCardDB, ContactDB, PendingSMSDB, SmsDB,
                         ReceivedSMSPartDB, PhoneCallDB,
                         PhoneCallRecordingDB)
+    from app.main import ContactBook
 
     monkeypatch.setattr(BaseDB, '_DB_FILE_NAME', ':memory:')
+    monkeypatch.setattr(ContactBook, '_seeded', False)
 
     th_local = BaseDB._threading_local
     if hasattr(th_local, 'db'):
@@ -25,7 +27,7 @@ def fresh_db(monkeypatch):
         del th_local.db
 
     # Create all tables in the new in-memory connection.
-    for cls in (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
+    for cls in (SIMCardDB, ContactDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
                 PhoneCallDB, PhoneCallRecordingDB):
         cls()
 

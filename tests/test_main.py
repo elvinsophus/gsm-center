@@ -3,6 +3,7 @@
 from json import loads as json_loads
 from unittest.mock import Mock, patch
 
+import pytest
 from app.audio import AudioPipeline
 from gsmmodem.modem import IncomingCall, TimeoutException
 
@@ -279,6 +280,71 @@ class TestPhoneCallRequests:
             f'incoming call #{calls[0].id} is still ringing; ring_count=2')
 
 
+class TestContactAliases:
+
+    def test_contact_alias_resolves_case_insensitively(
+            self, fresh_db, monkeypatch):
+        from app.config import _config
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Alice': OTHER_NUMBER,
+        })
+
+        assert GSMCenter.resolve_phone_number('alice') == OTHER_NUMBER
+        assert GSMCenter.ContactBook.alias_for_number(OTHER_NUMBER) == 'Alice'
+
+    def test_contact_alias_must_not_look_like_phone_number(
+            self, fresh_db, monkeypatch):
+        from app.config import _config
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            '+12025550122': OTHER_NUMBER,
+        })
+
+        with pytest.raises(ValueError, match='must start with a letter'):
+            GSMCenter.ContactBook.list()
+
+    def test_contact_numbers_must_be_unique(self, fresh_db, monkeypatch):
+        from app.config import _config
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Alice': OTHER_NUMBER,
+            'AliceWork': OTHER_NUMBER,
+        })
+
+        with pytest.raises(ValueError, match='multiple aliases'):
+            GSMCenter.ContactBook.list()
+
+    def test_pending_sms_aliases_are_stored_as_numbers(
+            self, fresh_db, monkeypatch):
+        from app.config import _config
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Own': OWN_NUMBER,
+            'Alice': OTHER_NUMBER,
+        })
+        GSMStore.sim_card_db.update(
+            '/dev/ttyUSB0', OWN_NUMBER, call_enabled=True, sms_enabled=True)
+
+        mid = GSMStore.add_pending_sms('own', 'alice', 'hello')
+
+        row = GSMStore.pending_sms_db.get(mid)
+        assert row['sender'] == OWN_NUMBER
+        assert row['recipient'] == OTHER_NUMBER
+
+    def test_phone_call_aliases_are_stored_as_numbers(
+            self, fresh_db, monkeypatch):
+        from app.config import _config
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Own': OWN_NUMBER,
+            'Alice': OTHER_NUMBER,
+        })
+        GSMStore.sim_card_db.update(
+            '/dev/ttyUSB0', OWN_NUMBER, call_enabled=True, sms_enabled=True)
+
+        mid = GSMStore.add_phone_call('own', 'alice')
+
+        row = GSMStore.phone_call_db.get(mid)
+        assert row['own_number'] == OWN_NUMBER
+        assert row['other_number'] == OTHER_NUMBER
+
+
 class TestPhoneCallStartupCleanup:
 
     def test_clear_stale_phone_calls_marks_in_flight_calls_ended(
@@ -396,6 +462,81 @@ class TestPhoneCallStartupCleanup:
         assert center._active_calls[mid] is None
         assert center._call_ring_counts[mid] == 1
 
+    def test_outgoing_answer_timeout_hangs_up_visible_dialing_call(
+            self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('OUTGOING', OWN_NUMBER, OTHER_NUMBER, 'DIALING')
+        db.update_status(
+            mid, 'DIALING', extra={'dialing_started_at': 1700000000})
+
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {mid: None}
+        center._call_ring_counts = {mid: 1}
+        center._modem = Mock()
+        center._modem.write.return_value = [
+            '+CLCC: 1,0,3,0,0,"12025550122",145',
+            'OK',
+        ]
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        center._options = GSMCenter.DeviceOptions(
+            call_enabled=True, outgoing_answer_timeout=30)
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+
+        with patch('app.main.time', return_value=1700000031):
+            center._refresh_active_phone_calls()
+
+        row = db.get(mid)
+        assert row['status'] == 'ENDED'
+        extra = json_loads(row['extra'])
+        assert extra['dialing_started_at'] == 1700000000
+        assert extra['ended_by'] == 'local'
+        assert extra['ended_role'] == 'caller'
+        assert extra['ended_reason'] == 'outgoing_answer_timeout'
+        center._modem.write.assert_any_call('AT+CLCC')
+        center._modem.write.assert_any_call('AT+CHUP')
+        assert mid not in center._active_calls
+        assert mid not in center._call_ring_counts
+
+    def test_outgoing_answer_timeout_does_not_preempt_answered_modem_call(
+            self, fresh_db):
+        db = GSMStore.phone_call_db
+        mid = db.insert('OUTGOING', OWN_NUMBER, OTHER_NUMBER, 'DIALING')
+        db.update_status(
+            mid, 'DIALING', extra={'dialing_started_at': 1700000000})
+
+        center = object.__new__(GSMCenter)
+        center._own_number = OWN_NUMBER
+        center._store = GSMStore(OWN_NUMBER)
+        center._active_calls = {mid: None}
+        center._call_ring_counts = {mid: 1}
+        center._modem = Mock()
+        center._modem.write.return_value = [
+            '+CLCC: 1,0,0,0,0,"12025550122",145',
+            'OK',
+        ]
+        center.logger = Mock()
+        center._run_call_hook = Mock()
+        center._options = GSMCenter.DeviceOptions(
+            call_enabled=True, outgoing_answer_timeout=30)
+        center._call_audio_processes = {}
+        center._call_audio_input_pipelines = {}
+        center._call_audio_output_pipelines = {}
+        center._call_recording_processes = {}
+
+        with patch('app.main.time', return_value=1700000031):
+            center._refresh_active_phone_calls()
+
+        row = db.get(mid)
+        assert row['status'] == 'ANSWERED'
+        assert row['started_at'] == 1700000031
+        center._modem.write.assert_called_once_with('AT+CLCC')
+
 
 class TestPhoneCallHooks:
 
@@ -411,7 +552,11 @@ class TestPhoneCallHooks:
         center.logger = Mock()
         return center
 
-    def test_status_transition_runs_matching_hook(self, fresh_db):
+    def test_status_transition_runs_matching_hook(self, fresh_db, monkeypatch):
+        from app.config import _config
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Alice': OTHER_NUMBER,
+        })
         center = self.make_center()
         mid = GSMStore.phone_call_db.insert(
             'INCOMING', OWN_NUMBER, OTHER_NUMBER, 'RINGING')
@@ -431,7 +576,9 @@ class TestPhoneCallHooks:
         assert env['CALL_DIRECTION'] == 'INCOMING'
         assert env['CALL_OWN_NUMBER'] == OWN_NUMBER
         assert env['CALL_OTHER_NUMBER'] == OTHER_NUMBER
+        assert env['CALL_OTHER_NUMBER_ALIAS'] == 'Alice'
         assert env['CALL_CALLER'] == OTHER_NUMBER
+        assert env['CALL_CALLER_ALIAS'] == 'Alice'
         assert env['CALL_RECIPIENT'] == OWN_NUMBER
         assert env['CALL_STATUS'] == 'ANSWERED'
         assert env['CALL_STARTED_AT'] == '1700000000'
@@ -801,13 +948,21 @@ class TestMultipartSMS:
         assert GSMCenter._parse_concat_udh([ie]) == ('42', 2, 1)
 
     def test_received_hook_uses_integer_timestamp_for_assembled_sms(
-            self, fresh_db):
+            self, fresh_db, monkeypatch):
+        from app.config import _config
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Alice': OTHER_NUMBER,
+            'Own': OWN_NUMBER,
+        })
         center = object.__new__(GSMCenter)
         center._own_number = OWN_NUMBER
         center._store = GSMStore(OWN_NUMBER)
         center._options = GSMCenter.DeviceOptions(
             sms_enabled=True,
-            on_sms_received='./sms {SMS_CONTENT} {SMS_TIMESTAMP}',
+            on_sms_received=(
+                './sms {SMS_CONTENT} {SMS_TIMESTAMP} '
+                '{SMS_SENDER} {SMS_SENDER_ALIAS} '
+                '{SMS_RECIPIENT} {SMS_RECIPIENT_ALIAS}'),
         )
         center.logger = Mock()
 
@@ -835,7 +990,9 @@ class TestMultipartSMS:
 
         run.assert_called_once()
         command = run.call_args.args[0]
-        assert command == './sms hello world 1700000000'
+        assert command == (
+            f'./sms hello world 1700000000 '
+            f'{OTHER_NUMBER} Alice {OWN_NUMBER} Own')
 
     def test_multipart_receive_logs_parts_then_complete_sms(self, fresh_db):
         center = object.__new__(GSMCenter)

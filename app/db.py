@@ -157,6 +157,78 @@ class SIMCardDB(BaseDB):
         return True
 
 
+class ContactDB(BaseDB):
+
+    schema = '''
+        `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+        `created_at` INTEGER NOT NULL,
+        `updated_at` INTEGER NOT NULL,
+        `alias` TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        `phone_number` TEXT NOT NULL UNIQUE
+    '''
+    indices = {
+        'contact_alias_idx': ('alias',),
+        'contact_phone_number_idx': ('phone_number',),
+    }
+
+    def upsert(self, alias: str, phone_number: str) -> int | None:
+        t = int(time())
+        self._execute(
+            f"insert into `{self.name}` "
+            f"(`created_at`, `updated_at`, `alias`, `phone_number`) "
+            f"values (?, ?, ?, ?) "
+            f"on conflict(`alias`) do update set "
+            f"`updated_at` = excluded.`updated_at`, "
+            f"`phone_number` = excluded.`phone_number`",
+            [t, t, alias, phone_number]
+        )
+        row = self.get_by_alias(alias)
+        return row['id'] if row else None
+
+    def insert_ignore(self, alias: str, phone_number: str) -> int | None:
+        t = int(time())
+        self._execute(
+            f"insert or ignore into `{self.name}` "
+            f"(`created_at`, `updated_at`, `alias`, `phone_number`) "
+            f"values (?, ?, ?, ?)",
+            [t, t, alias, phone_number]
+        )
+        row = self.get_by_alias(alias)
+        return row['id'] if row else None
+
+    def get_by_alias(self, alias: str) -> dict | None:
+        cursor = self._execute(
+            f"select * from `{self.name}` where `alias` = ? collate nocase",
+            [alias]
+        )
+        if not (row := cursor.fetchone()):
+            return None
+        cols = [c[0] for c in cursor.description]
+        return dict(zip(cols, row))
+
+    def get_by_number(self, phone_number: str) -> dict | None:
+        cursor = self._execute(
+            f"select * from `{self.name}` where `phone_number` = ?",
+            [phone_number]
+        )
+        if not (row := cursor.fetchone()):
+            return None
+        cols = [c[0] for c in cursor.description]
+        return dict(zip(cols, row))
+
+    def list(self) -> list[dict]:
+        cursor = self._execute(
+            f"select * from `{self.name}` order by `alias` collate nocase")
+        cols = [c[0] for c in cursor.description]
+        return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+    def delete_by_alias(self, alias: str) -> bool:
+        return bool(self._execute(
+            f"delete from `{self.name}` where `alias` = ? collate nocase",
+            [alias]
+        ).rowcount)
+
+
 class PendingSMSDB(BaseDB):
 
     schema = '''
@@ -639,7 +711,7 @@ class PhoneCallRecordingDB(BaseDB):
     def list(self, call_id: int, *,
              status: str | Enum | None = None,
              limit: int = 10) -> list[dict]:
-        where = {'call_id': call_id}
+        where: dict = {'call_id': call_id}
         if status is not None:
             where['status'] = _enum_name(status)
         cursor = self._execute(

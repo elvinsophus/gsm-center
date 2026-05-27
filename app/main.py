@@ -21,7 +21,7 @@ from gsmmodem.modem import (GsmModem, TimeoutException as GSMTimeout,
                             StatusReport, PinRequiredError, IncorrectPinError)
 from .config import config
 from .db import (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
-                 PhoneCallDB, PhoneCallRecordingDB)
+                 ContactDB, PhoneCallDB, PhoneCallRecordingDB)
 from .utils import timestamp_to_datetime, safe, run_system_command
 from .audio import (AudioPipeline, start_audio_input_command,
                     start_audio_output_command, stop_audio_pipeline)
@@ -33,6 +33,131 @@ PhoneCallType = PhoneCallDB.PhoneCallType
 _EMPTY_ARG = object()
 _CLCC_REGEX = re.compile(
     r'^\+CLCC:\s*(\d+),(\d),(\d),(\d),([^,]),"([^"]*)",(\d+)')
+_CONTACT_ALIAS_REGEX = re.compile(r'^[A-Za-z][A-Za-z0-9_.-]{0,63}$')
+
+
+def _normalise_phone_number(number: str) -> str:
+    if number is None:
+        raise ValueError('phone number is required')
+    number = str(number).strip()
+    try:
+        parsed = phonenumbers.parse(
+            number, region=config.get('DEFAULT_MOBILE_REGION'))
+    except phonenumbers.NumberParseException:
+        if number.isdigit():
+            return number
+        raise
+    return f'+{parsed.country_code}{parsed.national_number}'
+
+
+class ContactBook:
+    _seeded = False
+
+    @classmethod
+    def list(cls) -> dict[str, str]:
+        cls.seed_from_config()
+        return {
+            row['alias']: row['phone_number']
+            for row in ContactDB().list()
+        }
+
+    @classmethod
+    def seed_from_config(cls):
+        if cls._seeded:
+            return
+        contacts = config.get('CONTACTS') or {}
+        if not isinstance(contacts, dict):
+            raise ValueError('CONTACTS must be a mapping of alias to number')
+        alias_keys = set()
+        numbers = set()
+        contact_db = ContactDB()
+        for raw_alias, raw_number in contacts.items():
+            alias = cls.normalise_alias(raw_alias)
+            alias_key = alias.lower()
+            if alias_key in alias_keys:
+                raise ValueError(f'contact alias {alias!r} is duplicated')
+            alias_keys.add(alias_key)
+            number = _normalise_phone_number(str(raw_number))
+            if number in numbers:
+                raise ValueError(
+                    f'contact number {number!r} is assigned to multiple '
+                    f'aliases')
+            numbers.add(number)
+            try:
+                if contact_db.insert_ignore(alias, number) is None:
+                    raise ValueError(
+                        f'phone number {number!r} is already assigned')
+            except Exception as e:
+                raise ValueError(
+                    f'could not seed contact alias {alias!r} for '
+                    f'{number!r}: {e}') from e
+        cls._seeded = True
+
+    @classmethod
+    def normalise_alias(cls, alias: str) -> str:
+        if alias is None:
+            raise ValueError('contact alias is required')
+        alias = str(alias).strip()
+        if not _CONTACT_ALIAS_REGEX.match(alias):
+            raise ValueError(
+                f'contact alias {alias!r} must start with a letter and '
+                f'contain only letters, numbers, underscores, dots, or '
+                f'hyphens')
+        return alias
+
+    @classmethod
+    def resolve(cls, value: str) -> str:
+        if value is None:
+            raise ValueError('phone number or contact alias is required')
+        text = str(value).strip()
+        cls.seed_from_config()
+        if row := ContactDB().get_by_alias(text):
+            return row['phone_number']
+        try:
+            cls.normalise_alias(text)
+        except ValueError:
+            return _normalise_phone_number(text)
+        raise ValueError(f'contact alias {text!r} is not configured')
+
+    @classmethod
+    def alias_for_number(cls, number: str) -> str:
+        if not number:
+            return ''
+        cls.seed_from_config()
+        normalised = _normalise_phone_number(number)
+        row = ContactDB().get_by_number(normalised)
+        return row['alias'] if row else ''
+
+    @classmethod
+    def upsert(cls, alias: str, phone_number: str) -> int | None:
+        alias = cls.normalise_alias(alias)
+        phone_number = _normalise_phone_number(phone_number)
+        try:
+            return ContactDB().upsert(alias, phone_number)
+        except Exception as e:
+            raise ValueError(
+                f'could not save contact alias {alias!r} for '
+                f'{phone_number!r}: {e}') from e
+
+    @classmethod
+    def delete(cls, alias: str) -> bool:
+        return ContactDB().delete_by_alias(cls.normalise_alias(alias))
+
+
+def resolve_phone_number(value: str) -> str:
+    return ContactBook.resolve(value)
+
+
+def contact_alias_for_number(number: str) -> str:
+    return ContactBook.alias_for_number(number)
+
+
+def format_contact_number(number: str) -> str:
+    if not number:
+        return ''
+    if alias := contact_alias_for_number(number):
+        return f'{alias} <{number}>'
+    return number
 
 
 class PendingSMSStatus(Enum):
@@ -151,6 +276,7 @@ class StoredPhoneCallRecording(NamedTuple):
 class GSMStore:
 
     sim_card_db = SIMCardDB()
+    contact_db = ContactDB()
     pending_sms_db = PendingSMSDB()
     sms_db = SmsDB()
     received_sms_part_db = ReceivedSMSPartDB()
@@ -159,7 +285,7 @@ class GSMStore:
 
     def __init__(self, own_number: str):
         if own_number:
-            own_number = GSMCenter.normalise_number(own_number)
+            own_number = resolve_phone_number(own_number)
         self._own_number = own_number
 
     def __repr__(self):
@@ -196,8 +322,15 @@ class GSMStore:
                   other_number: str | None = None,
                   status: SentSMSStatus | None = None,
                   limit: int = 10) -> list[StoredSMS]:
+        return self.list_smses(
+            type_, other_number=other_number, status=status, limit=limit)
+
+    def list_smses(self, type_: SMSType | None = None, *,
+                   other_number: str | None = None,
+                   status: SentSMSStatus | None = None,
+                   limit: int = 10) -> list[StoredSMS]:
         if other_number:
-            other_number = GSMCenter.normalise_number(other_number)
+            other_number = resolve_phone_number(other_number)
         return list(map(
             self.sms_from_db,
             self.sms_db.list(
@@ -231,7 +364,15 @@ class GSMStore:
                        status: SentSMSStatus | None = None,
                        limit: int = 10
                        ) -> list[StoredSMS]:
-        return self.list_smss(
+        return self.list_sent_smses(
+            recipient=recipient, status=status, limit=limit)
+
+    def list_sent_smses(self, *,
+                        recipient: str = '',
+                        status: SentSMSStatus | None = None,
+                        limit: int = 10
+                        ) -> list[StoredSMS]:
+        return self.list_smses(
             SMSType.SENT, other_number=recipient, status=status, limit=limit)
 
     def get_received_sms(self, mid: int) -> StoredSMS | None:
@@ -246,7 +387,15 @@ class GSMStore:
                            status: SentSMSStatus | None = None,
                            limit: int = 10
                            ) -> list[StoredSMS]:
-        return self.list_smss(
+        return self.list_received_smses(
+            sender=sender, status=status, limit=limit)
+
+    def list_received_smses(self, *,
+                            sender: str | None = None,
+                            status: SentSMSStatus | None = None,
+                            limit: int = 10
+                            ) -> list[StoredSMS]:
+        return self.list_smses(
             SMSType.RECEIVED, other_number=sender, status=status, limit=limit)
 
     def preview_dialogs(self, limit: int = 10) -> list[tuple[StoredSMS, int]]:
@@ -261,7 +410,7 @@ class GSMStore:
             self.sms_from_db,
             self.sms_db.list(
                 own_number=self._own_number,
-                other_number=GSMCenter.normalise_number(other_number),
+                other_number=resolve_phone_number(other_number),
                 limit=limit)
         ))
 
@@ -351,7 +500,7 @@ class GSMStore:
                          status: PhoneCallStatus | None = None,
                          limit: int = 10) -> list[StoredPhoneCall]:
         if other_number:
-            other_number = GSMCenter.normalise_number(other_number)
+            other_number = resolve_phone_number(other_number)
         return list(map(
             self.phone_call_from_db,
             self.phone_call_db.list(
@@ -398,8 +547,8 @@ class GSMStore:
     @classmethod
     def add_pending_sms(cls, sender: str, recipient: str, content: str
                         ) -> int | None:
-        sender = GSMCenter.normalise_number(sender)
-        recipient = GSMCenter.normalise_number(recipient)
+        sender = resolve_phone_number(sender)
+        recipient = resolve_phone_number(recipient)
         threshold = 60
         if sender not in cls.list_active_own_numbers(threshold,
                                                      sms_enabled=True):
@@ -411,8 +560,8 @@ class GSMStore:
 
     @classmethod
     def add_phone_call(cls, caller: str, recipient: str) -> int | None:
-        caller = GSMCenter.normalise_number(caller)
-        recipient = GSMCenter.normalise_number(recipient)
+        caller = resolve_phone_number(caller)
+        recipient = resolve_phone_number(recipient)
         threshold = 60
         if caller not in cls.list_active_own_numbers(threshold,
                                                      call_enabled=True):
@@ -450,6 +599,7 @@ class DeviceOptions(NamedTuple):
     own_number: str = None
     sms_enabled: bool = False
     call_enabled: bool = False
+    outgoing_answer_timeout: int = 0
     audio_device: str = ''
     on_sms_received: str = ''
     on_sms_received_env: dict = None
@@ -505,6 +655,12 @@ class DeviceOptions(NamedTuple):
         if (call_enabled := _first_defined(
                 call_conf.get('enabled'), d.get('call_enabled'))) is not None:
             args['call_enabled'] = bool(call_enabled)
+        outgoing_conf = _dict_or_empty(call_conf.get('outgoing'))
+        if (answer_timeout := _first_defined(
+                outgoing_conf.get('answer_timeout'),
+                call_conf.get('outgoing_answer_timeout'))) is not None:
+            answer_timeout: int | str
+            args['outgoing_answer_timeout'] = int(answer_timeout)
         if audio_device := _first_truthy(
                 call_conf.get('audio_device'), d.get('audio_device')):
             args['audio_device'] = str(audio_device)
@@ -714,6 +870,7 @@ class GSMCenter:
     PhoneCallRecordingStatus = PhoneCallRecordingStatus
     DeviceOptions = DeviceOptions
     AudioDeviceOptions = AudioDeviceOptions
+    ContactBook = ContactBook
 
     def __init__(self, port: str = '', **kwargs):
         dev_confs = config.get('DEVICES') or {}
@@ -850,16 +1007,11 @@ class GSMCenter:
 
     @classmethod
     def normalise_number(cls, number: str) -> str:
-        if number is None:
-            raise ValueError('phone number is required')
-        try:
-            parsed = phonenumbers.parse(
-                number, region=config.get('DEFAULT_MOBILE_REGION'))
-        except phonenumbers.NumberParseException:
-            if number.isdigit():
-                return number
-            raise
-        return f'+{parsed.country_code}{parsed.national_number}'
+        return _normalise_phone_number(number)
+
+    @classmethod
+    def resolve_phone_number(cls, value: str) -> str:
+        return resolve_phone_number(value)
 
     @classmethod
     def simplify_number(cls, number: str) -> str:
@@ -899,7 +1051,7 @@ class GSMCenter:
             return
         if not self._connect():
             return
-        self.logger.info(f'processing SMSs stored in MODEM...')
+        self.logger.info(f'processing SMSes stored in MODEM...')
         self._modem.processStoredSms()
 
     def _assemble_stored_received_sms_parts(self):
@@ -1030,6 +1182,8 @@ class GSMCenter:
                         and modem_call['status'] == '0'):
                     self._update_phone_call_status(
                         mid, PhoneCallStatus.ANSWERED, started_at=int(time()))
+                elif self._outgoing_answer_timed_out(stored):
+                    self._end_outgoing_answer_timeout(mid, stored)
                 continue
             self.logger.info(f'phone call #{mid} is no longer active')
             self._update_phone_call_status(
@@ -1080,6 +1234,48 @@ class GSMCenter:
             self.logger.warning(
                 f'marked {count} stale phone call(s) as ended')
 
+    def _outgoing_answer_timed_out(self, stored: StoredPhoneCall) -> bool:
+        timeout = self._options.outgoing_answer_timeout
+        if timeout <= 0:
+            return False
+        if stored.type is not PhoneCallType.OUTGOING:
+            return False
+        if stored.status is not PhoneCallStatus.DIALING:
+            return False
+        extra = stored.extra or {}
+        try:
+            dialing_started_at = int(extra.get(
+                'dialing_started_at', int(stored.time.timestamp())))
+        except (TypeError, ValueError):
+            dialing_started_at = int(stored.time.timestamp())
+        return int(time()) - dialing_started_at >= timeout
+
+    def _end_outgoing_answer_timeout(
+            self, mid: int, stored: StoredPhoneCall):
+        self.logger.info(
+            f'outgoing phone call #{mid} was not answered within '
+            f'{self._options.outgoing_answer_timeout}s; hanging up')
+        extra = dict(stored.extra or {})
+        extra.update(
+            ended_by='local',
+            ended_role='caller',
+            ended_reason='outgoing_answer_timeout')
+        try:
+            self._hangup_modem_phone_call(mid)
+        except Exception as e:
+            self.logger.error(
+                f'phone call #{mid} timeout hangup failed due to {e!r}')
+            extra.update(exc=repr(e), tb=format_tb(exc_info()[2]))
+            self._update_phone_call_status(
+                mid, PhoneCallStatus.FAILED, ended_at=int(time()),
+                extra=extra)
+        else:
+            self._update_phone_call_status(
+                mid, PhoneCallStatus.ENDED, ended_at=int(time()),
+                extra=extra)
+        self._active_calls.pop(mid, None)
+        self._call_ring_counts.pop(mid, None)
+
     def make_phone_call(self, recipient: str, *,
                         wait_for_answer: bool | float = False
                         ) -> int | None:
@@ -1090,7 +1286,7 @@ class GSMCenter:
             return None
 
         logger = self.logger
-        recipient = self.normalise_number(recipient)
+        recipient = resolve_phone_number(recipient)
         call_db = self._store.phone_call_db
         statuses = PhoneCallStatus
         mid = call_db.insert(
@@ -1098,6 +1294,7 @@ class GSMCenter:
             statuses.DIALING)
         if mid is None:
             raise RuntimeError('phone call could not be inserted into DB')
+        self._merge_phone_call_extra(mid, dialing_started_at=int(time()))
         self._run_call_hook(mid, 'dialing')
 
         logger.info(f'making phone call #{mid} to {recipient!r}...')
@@ -1186,6 +1383,7 @@ class GSMCenter:
             if not self._update_phone_call_status(
                     mid, statuses.DIALING, from_status=statuses.CREATED):
                 continue
+            self._merge_phone_call_extra(mid, dialing_started_at=int(time()))
             try:
                 call = self._modem.dial(
                     self.simplify_number(row['other_number']),
@@ -1745,9 +1943,18 @@ class GSMCenter:
             'CALL_ID': mid,
             'CALL_DIRECTION': call.type.name if call else '',
             'CALL_OWN_NUMBER': call.own_number if call else self._own_number,
+            'CALL_OWN_NUMBER_ALIAS': (
+                contact_alias_for_number(call.own_number)
+                if call else contact_alias_for_number(self._own_number)),
             'CALL_OTHER_NUMBER': call.other_number if call else '',
+            'CALL_OTHER_NUMBER_ALIAS': (
+                contact_alias_for_number(call.other_number) if call else ''),
             'CALL_CALLER': call.caller if call else '',
+            'CALL_CALLER_ALIAS': (
+                contact_alias_for_number(call.caller) if call else ''),
             'CALL_RECIPIENT': call.recipient if call else '',
+            'CALL_RECIPIENT_ALIAS': (
+                contact_alias_for_number(call.recipient) if call else ''),
             'CALL_STATUS': call.status.name if call else '',
             'CALL_TIMESTAMP': event_time,
             'CALL_TIME_STR': timestamp_to_datetime(event_time),
@@ -1787,7 +1994,9 @@ class GSMCenter:
         if cmd := options.on_sms_received:
             run_system_command(cmd.format(
                 SMS_SENDER=sender,
+                SMS_SENDER_ALIAS=contact_alias_for_number(sender),
                 SMS_RECIPIENT=recipient,
+                SMS_RECIPIENT_ALIAS=contact_alias_for_number(recipient),
                 SMS_CONTENT=content,
                 SMS_TIMESTAMP=at,
                 SMS_TIME_STR=timestamp_to_datetime(at)
@@ -1915,7 +2124,7 @@ class GSMCenter:
             return None
 
         logger = self.logger
-        recipient = self.normalise_number(recipient)
+        recipient = resolve_phone_number(recipient)
         sms_db = self._store.sms_db
         statuses = SentSMSStatus
         mid = sms_db.insert(
@@ -1996,7 +2205,7 @@ class GSMCenter:
         if options.call_enabled:
             awaiting.append('calls')
         if options.sms_enabled:
-            awaiting.append('SMSs')
+            awaiting.append('SMSes')
         if awaiting:
             info(f'awaiting {" and ".join(awaiting)}...')
 

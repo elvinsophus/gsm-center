@@ -3,6 +3,7 @@
 # noinspection PyPep8
 import click
 import json
+from datetime import datetime
 from flask.cli import FlaskGroup
 
 
@@ -78,55 +79,126 @@ def loop(port):
     GSMCenter.loop_all()
 
 
-@cli.command(short_help='List sent SMS messages.')
+@cli.command('list-contacts', short_help='List contact aliases.')
+def list_contacts():
+    """List configured contact aliases from the contact table."""
+    from app.main import GSMCenter
+    for alias, phone_number in GSMCenter.ContactBook.list().items():
+        print(f'{alias}: {phone_number}')
+
+
+@cli.command('set-contact', short_help='Create or update a contact alias.')
+@click.argument('alias', metavar='ALIAS')
+@click.argument('phone_number', metavar='PHONE_NUMBER')
+def set_contact(alias, phone_number):
+    """Create or update contact ALIAS for PHONE_NUMBER."""
+    from app.main import GSMCenter
+    GSMCenter.ContactBook.upsert(alias, phone_number)
+    print(f'set contact {alias}: {GSMCenter.resolve_phone_number(alias)}')
+
+
+@cli.command('delete-contact', short_help='Delete a contact alias.')
+@click.argument('alias', metavar='ALIAS')
+def delete_contact(alias):
+    """Delete contact ALIAS."""
+    from app.main import GSMCenter
+    if not GSMCenter.ContactBook.delete(alias):
+        raise click.ClickException(f'contact alias {alias!r} not found')
+    print(f'deleted contact {alias}')
+
+
+def _list_sent_smses(sender, count):
+    from app.main import GSMCenter, format_contact_number
+    for sms in GSMCenter.GSMStore(sender).list_sent_smses(limit=count):
+        print('\n'.join([
+            f'#{sms.id} | {sms.time} | ({sms.status.name})',
+            f'  {format_contact_number(sms.sender)} -> '
+            f'{format_contact_number(sms.recipient)}',
+            f'  {sms.content}',
+            ''
+        ]))
+
+
+@cli.command('list-sent-smses', short_help='List sent SMS messages.')
+@click.argument('sender', required=False, default='', metavar='[SENDER]')
+@click.option('-n', '--count', type=int, default=10, show_default=True,
+              help='Maximum number of messages to show.')
+def list_sent_smses(sender, count):
+    """List sent SMS messages, optionally filtered by own SENDER number."""
+    _list_sent_smses(sender, count)
+
+
+@cli.command('list-sent-smss', hidden=True)
 @click.argument('sender', required=False, default='', metavar='[SENDER]')
 @click.option('-n', '--count', type=int, default=10, show_default=True,
               help='Maximum number of messages to show.')
 def list_sent_smss(sender, count):
-    """List sent SMS messages, optionally filtered by own SENDER number."""
-    from app.main import GSMCenter
-    for sms in GSMCenter.GSMStore(sender).list_sent_smss(limit=count):
+    """Legacy alias for list-sent-smses."""
+    _list_sent_smses(sender, count)
+
+
+def _list_received_smses(recipient, count):
+    from app.main import GSMCenter, format_contact_number
+    for sms in GSMCenter.GSMStore(recipient).list_received_smses(limit=count):
         print('\n'.join([
             f'#{sms.id} | {sms.time} | ({sms.status.name})',
-            f'  {sms.sender} -> {sms.recipient}',
+            f'  {format_contact_number(sms.sender)} -> '
+            f'{format_contact_number(sms.recipient)}',
             f'  {sms.content}',
             ''
         ]))
 
 
-@cli.command(short_help='List received SMS messages.')
+@cli.command('list-received-smses', short_help='List received SMS messages.')
+@click.argument('recipient', required=False, default='', metavar='[RECIPIENT]')
+@click.option('-n', '--count', type=int, default=10, show_default=True,
+              help='Maximum number of messages to show.')
+def list_received_smses(recipient, count):
+    """List received SMS messages, optionally filtered by own RECIPIENT."""
+    _list_received_smses(recipient, count)
+
+
+@cli.command('list-received-smss', hidden=True)
 @click.argument('recipient', required=False, default='', metavar='[RECIPIENT]')
 @click.option('-n', '--count', type=int, default=10, show_default=True,
               help='Maximum number of messages to show.')
 def list_received_smss(recipient, count):
-    """List received SMS messages, optionally filtered by own RECIPIENT."""
-    from app.main import GSMCenter
-    for sms in GSMCenter.GSMStore(recipient).list_received_smss(limit=count):
+    """Legacy alias for list-received-smses."""
+    _list_received_smses(recipient, count)
+
+
+def _list_smses(own_number, count):
+    from app.main import GSMCenter, format_contact_number
+    types = GSMCenter.SMSType
+    for sms in GSMCenter.GSMStore(own_number).list_smses(limit=count):
         print('\n'.join([
             f'#{sms.id} | {sms.time} | ({sms.status.name})',
-            f'  {sms.sender} -> {sms.recipient}',
+            f'  {format_contact_number(sms.own_number)} '
+            f'{"->" if sms.type is types.SENT else "<-"} '
+            f'{format_contact_number(sms.other_number)}',
             f'  {sms.content}',
             ''
         ]))
 
 
-@cli.command(short_help='List sent and received SMS messages.')
+@cli.command('list-smses', short_help='List sent and received SMS messages.')
+@click.argument('own_number', required=False, default='',
+                metavar='[OWN_NUMBER]')
+@click.option('-n', '--count', type=int, default=10, show_default=True,
+              help='Maximum number of messages to show.')
+def list_smses(own_number, count):
+    """List all SMS messages, optionally filtered by own phone number."""
+    _list_smses(own_number, count)
+
+
+@cli.command('list-smss', hidden=True)
 @click.argument('own_number', required=False, default='',
                 metavar='[OWN_NUMBER]')
 @click.option('-n', '--count', type=int, default=10, show_default=True,
               help='Maximum number of messages to show.')
 def list_smss(own_number, count):
-    """List all SMS messages, optionally filtered by own phone number."""
-    from app.main import GSMCenter
-    types = GSMCenter.SMSType
-    for sms in GSMCenter.GSMStore(own_number).list_smss(limit=count):
-        print('\n'.join([
-            f'#{sms.id} | {sms.time} | ({sms.status.name})',
-            f'  {sms.own_number} {"->" if sms.type is types.SENT else "<-"}'
-            f' {sms.other_number}',
-            f'  {sms.content}',
-            ''
-        ]))
+    """Legacy alias for list-smses."""
+    _list_smses(own_number, count)
 
 
 @cli.command(short_help='Preview latest SMS dialogs.')
@@ -136,11 +208,12 @@ def list_smss(own_number, count):
               help='Maximum number of dialogs to show.')
 def preview_sms_dialogs(own_number, count):
     """Preview latest conversation rows for an optional own number."""
-    from app.main import GSMCenter
+    from app.main import GSMCenter, format_contact_number
     types = GSMCenter.SMSType
     for sms, count in GSMCenter.GSMStore(own_number).preview_dialogs(count):
         print('\n'.join([
-            f'{sms.own_number} <-> {sms.other_number} ({count})',
+            f'{format_contact_number(sms.own_number)} <-> '
+            f'{format_contact_number(sms.other_number)} ({count})',
             f'  {"->" if sms.type is types.SENT else "<-"} {sms.time}: '
             f'{sms.content}',
             ''
@@ -154,10 +227,12 @@ def preview_sms_dialogs(own_number, count):
               help='Maximum number of messages to show.')
 def list_sms_dialog(own_number, other_number, count):
     """List the SMS dialog between OWN_NUMBER and OTHER_NUMBER."""
-    from app.main import GSMCenter
-    normalise_num = GSMCenter.normalise_number
+    from app.main import GSMCenter, format_contact_number
+    resolve_num = GSMCenter.resolve_phone_number
     types = GSMCenter.SMSType
-    print(f'{normalise_num(own_number)} <-> {normalise_num(other_number)}')
+    print(
+        f'{format_contact_number(resolve_num(own_number))} <-> '
+        f'{format_contact_number(resolve_num(other_number))}')
     print()
     for sms in GSMCenter.GSMStore(own_number).list_dialog(other_number, count):
         print('\n'.join([
@@ -168,30 +243,29 @@ def list_sms_dialog(own_number, other_number, count):
         ]))
 
 
-@cli.command(short_help='List phone call history.')
-@click.argument('own_number', required=False, default='',
-                metavar='[OWN_NUMBER]')
-@click.option('-n', '--count', type=int, default=10, show_default=True,
-              help='Maximum number of calls to show.')
-def list_phone_calls(own_number, count):
-    """List phone calls, optionally filtered by own phone number."""
-    from app.main import GSMCenter
+def _list_calls(own_number, count):
+    from app.main import GSMCenter, format_contact_number
     types = GSMCenter.PhoneCallType
-    for call in GSMCenter.GSMStore(own_number).list_phone_calls(limit=count):
-        direction = '->' if call.type is types.OUTGOING else '<-'
-        started_at = call.started_at or '-'
-        ended_at = call.ended_at or '-'
-        duration = _format_duration(call.started_at, call.ended_at)
+    for phone_call in GSMCenter.GSMStore(
+            own_number).list_phone_calls(limit=count):
+        direction = '->' if phone_call.type is types.OUTGOING else '<-'
+        started_at = phone_call.started_at or '-'
+        ended_at = phone_call.ended_at or '-'
+        duration = _format_duration(
+            phone_call.started_at, phone_call.ended_at)
         extra = json.dumps(
-            call.extra, ensure_ascii=False, sort_keys=True
-        ) if call.extra else '{}'
-        ended_by = _format_call_ended_by(call, types)
+            phone_call.extra, ensure_ascii=False, sort_keys=True
+        ) if phone_call.extra else '{}'
+        ended_by = _format_call_ended_by(phone_call, types)
         print('\n'.join([
-            f'#{call.id} | {call.time} | {call.type.name} | '
-            f'{call.status.name}',
-            f'  {call.own_number} {direction} {call.other_number}',
-            f'  caller: {call.caller or "(unknown)"}',
-            f'  recipient: {call.recipient or "(unknown)"}',
+            f'#{phone_call.id} | {phone_call.time} | '
+            f'{phone_call.type.name} | {phone_call.status.name}',
+            f'  {format_contact_number(phone_call.own_number)} {direction} '
+            f'{format_contact_number(phone_call.other_number)}',
+            f'  caller: '
+            f'{format_contact_number(phone_call.caller) or "(unknown)"}',
+            f'  recipient: '
+            f'{format_contact_number(phone_call.recipient) or "(unknown)"}',
             f'  started_at: {started_at}',
             f'  ended_at: {ended_at}',
             f'  duration: {duration}',
@@ -199,6 +273,16 @@ def list_phone_calls(own_number, count):
             f'  extra: {extra}',
             ''
         ]))
+
+
+@cli.command('list-calls', short_help='List call history.')
+@click.argument('own_number', required=False, default='',
+                metavar='[OWN_NUMBER]')
+@click.option('-n', '--count', type=int, default=10, show_default=True,
+              help='Maximum number of calls to show.')
+def list_calls(own_number, count):
+    """List calls, optionally filtered by own phone number."""
+    _list_calls(own_number, count)
 
 
 @cli.command(short_help='Queue an outgoing phone call.')
@@ -258,20 +342,20 @@ def _resolve_single_call_id(gsm_center, statuses, action: str) -> int:
     calls = []
     seen = set()
     for status in statuses:
-        for call in store.list_phone_calls(status=status, limit=100):
-            if call.id not in seen:
-                calls.append(call)
-                seen.add(call.id)
+        for phone_call in store.list_phone_calls(status=status, limit=100):
+            if phone_call.id not in seen:
+                calls.append(phone_call)
+                seen.add(phone_call.id)
     if len(calls) == 1:
         return calls[0].id
     if not calls:
         raise click.ClickException(f'no phone call is available to {action}')
-    ids = ', '.join(f'#{call.id}' for call in calls)
+    ids = ', '.join(f'#{phone_call.id}' for phone_call in calls)
     raise click.ClickException(
         f'multiple phone calls are available to {action}: {ids}')
 
 
-def _format_duration(started_at, ended_at):
+def _format_duration(started_at: datetime | None, ended_at: datetime | None):
     if not started_at:
         return '-'
     if not ended_at:
@@ -284,11 +368,11 @@ def _format_duration(started_at, ended_at):
     return f'{minutes:d}:{seconds:02d}'
 
 
-def _format_call_ended_by(call, types):
-    extra = call.extra or {}
+def _format_call_ended_by(phone_call, types):
+    extra = phone_call.extra or {}
     if extra.get('ended_reason') == 'local_rejected':
         role = extra.get('ended_role') or (
-            'dialee' if call.type is types.INCOMING else 'caller')
+            'dialee' if phone_call.type is types.INCOMING else 'caller')
         return f'rejected by local {role}'
     ended_by = extra.get('ended_by')
     role = extra.get('ended_role')
@@ -297,7 +381,7 @@ def _format_call_ended_by(call, types):
     if ended_by == 'remote':
         return f'remote {role}' if role else 'remote'
     if extra.get('ended_reason') == 'remote_hangup_or_modem_cleared_call':
-        role = 'dialee' if call.type is types.OUTGOING else 'caller'
+        role = 'dialee' if phone_call.type is types.OUTGOING else 'caller'
         return f'remote {role} or modem'
     return '-'
 

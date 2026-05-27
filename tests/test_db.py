@@ -4,8 +4,8 @@ import json
 import pytest
 from enum import Enum
 
-from app.db import (SIMCardDB, PendingSMSDB, SmsDB, ReceivedSMSPartDB,
-                    PhoneCallDB, PhoneCallRecordingDB)
+from app.db import (SIMCardDB, ContactDB, PendingSMSDB, SmsDB,
+                    ReceivedSMSPartDB, PhoneCallDB, PhoneCallRecordingDB)
 
 SENT = SmsDB.SMSType.SENT
 RECEIVED = SmsDB.SMSType.RECEIVED
@@ -22,6 +22,11 @@ THIRD_NUMBER = '+12025550133'
 @pytest.fixture
 def sim_db(fresh_db):
     return SIMCardDB()
+
+
+@pytest.fixture
+def contact_db(fresh_db):
+    return ContactDB()
 
 
 @pytest.fixture
@@ -111,6 +116,31 @@ class TestSIMCardDB:
 
 
 # ── PendingSMSDB ──────────────────────────────────────────────────────────────
+
+class TestContactDB:
+
+    def test_upsert_and_list(self, contact_db):
+        contact_db.upsert('Alice', OTHER_NUMBER)
+
+        rows = contact_db.list()
+
+        assert len(rows) == 1
+        assert rows[0]['alias'] == 'Alice'
+        assert rows[0]['phone_number'] == OTHER_NUMBER
+
+    def test_alias_lookup_is_case_insensitive(self, contact_db):
+        contact_db.upsert('Alice', OTHER_NUMBER)
+
+        row = contact_db.get_by_alias('alice')
+
+        assert row['phone_number'] == OTHER_NUMBER
+
+    def test_delete_by_alias_is_case_insensitive(self, contact_db):
+        contact_db.upsert('Alice', OTHER_NUMBER)
+
+        assert contact_db.delete_by_alias('alice') is True
+        assert contact_db.list() == []
+
 
 class TestPendingSMSDB:
 

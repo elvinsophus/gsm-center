@@ -78,12 +78,15 @@ normalization, multipart SMS assembly, and call restart/request edge cases.
 
 ```bash
 python manage.py loop [PORT]                       # Start modem listener for a port or all devices
-python manage.py list-sent-smss [SENDER] -n 10     # View sent SMS
-python manage.py list-received-smss [RCPT] -n 10   # View received SMS
-python manage.py list-smss [NUMBER] -n 10          # View all SMS for a number
+python manage.py list-contacts                     # List contact aliases
+python manage.py set-contact ALIAS PHONE_NUMBER    # Create or update a contact alias
+python manage.py delete-contact ALIAS              # Delete a contact alias
+python manage.py list-sent-smses [SENDER] -n 10    # View sent SMS
+python manage.py list-received-smses [RCPT] -n 10  # View received SMS
+python manage.py list-smses [NUMBER] -n 10         # View all SMS for a number
 python manage.py list-sms-dialog NUM1 NUM2 -n 10   # View conversation thread
 python manage.py preview-sms-dialogs [NUM] -n 10   # Preview all conversation threads
-python manage.py list-phone-calls [OWN] -n 10      # View detailed phone calls
+python manage.py list-calls [OWN] -n 10            # View detailed calls
 python manage.py call CALLER RECIPIENT             # Queue outgoing phone call
 python manage.py answer-call [CALL_ID]             # Queue answer request; ID optional if unambiguous
 python manage.py hangup-call [CALL_ID]             # Queue hangup/reject request; ID optional if unambiguous
@@ -101,6 +104,9 @@ python manage.py test                              # Healthcheck (prints "Hello 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/own-numbers` | List active phone numbers (updated in last 60s) |
+| `GET` | `/contacts` | List contact aliases |
+| `POST` | `/contacts` | Create/update contact alias: `{"alias": "...", "phone_number": "+..."}` |
+| `DELETE` | `/contacts/<alias>` | Delete a contact alias |
 | `GET` | `/audio/devices` | List configured audio devices |
 | `GET` | `/audio/devices/<name>` | Get configured audio device detail |
 | `POST` | `/audio/devices/<name>/test-record` | Record a short WAV through configured input |
@@ -134,7 +140,7 @@ python manage.py test                              # Healthcheck (prints "Hello 
   pending phone-call requests.
 - Every 300s checks network coverage and modem-stored SMS messages.
 - `send_sms()` sends via modem and records to `SmsDB`.
-- `process_pending_smss()` picks up CREATED pending SMS and advances status.
+- `process_pending_smss()` picks up CREATED pending SMSes and advances status.
 - `_handle_received_sms()` stores inbound SMS, assembles multipart messages,
   and optionally runs an SMS hook once the complete message exists.
 - `_handle_incoming_call()` records inbound calls, keeps the live call object,
@@ -150,7 +156,7 @@ python manage.py test                              # Healthcheck (prints "Hello 
 - `add_phone_call()` queues outgoing phone calls.
 - `request_phone_call_answer()` and `request_phone_call_hangup()` queue call
   actions.
-- `list_smss()`, `list_dialog()`, `list_phone_calls()`,
+- `list_smses()`, `list_dialog()`, `list_phone_calls()`,
   `list_active_own_numbers()` etc.
 
 ### Database (`app/db.py`)
@@ -159,6 +165,7 @@ SQLite tables use a thread-local connection wrapper:
 
 - **`sim_card`** - device metadata (`gsm_port`, `phone_number`,
   `call_enabled`, `sms_enabled`, `updated_at`)
+- **`contact`** - contact alias mapping for display and request input
 - **`pending_sms`** - outgoing SMS queue (`CREATED -> PENDING -> PROCESSED`)
 - **`sms`** - sent/received SMS history
 - **`received_sms_part`** - persisted multipart inbound SMS parts, used to
@@ -199,6 +206,10 @@ Outgoing:
 POST /calls -> phone_call CREATED -> loop dials -> DIALING/ANSWERED/ENDED
 ```
 
+If `calls.outgoing.answer_timeout` is positive, the loop hangs up unanswered
+outgoing calls after that many seconds and records
+`ended_reason=outgoing_answer_timeout`.
+
 Incoming:
 
 ```text
@@ -221,6 +232,10 @@ YAML-based, no environment variable overrides. Prefer grouped device config:
 ```yaml
 DEFAULT_MOBILE_REGION: CN
 SQLITE3_FILE: db.sqlite3
+
+CONTACTS:
+  alice: "+8613512345678"
+  bob: "+8613812345678"
 
 AUDIO_DEVICES:
   gsm_usb:
@@ -245,6 +260,8 @@ DEVICES:
 
     calls:
       enabled: yes
+      outgoing:
+        answer_timeout: 45
       audio_device: gsm_usb
       hooks:
         received:
@@ -306,6 +323,15 @@ on_call_failed_env:
 ```
 
 Grouped config takes precedence when both forms are present.
+
+`CONTACTS` is optional seed data for the `contact` table. Aliases may be used
+at CLI/API boundaries for senders, recipients, callers, own numbers, and peer
+numbers. They are resolved to E.164 phone numbers before SMS/call rows are
+stored, and existing phone-number environment variables remain phone numbers.
+Edit contacts dynamically with `set-contact`/`delete-contact` or the
+`/contacts` API. Alias names must start with a letter and contain only letters,
+numbers, underscores, dots, or hyphens. Matching is case-insensitive, and each
+normalized phone number may have at most one alias.
 
 ## Audio Roadmap
 

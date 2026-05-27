@@ -157,6 +157,46 @@ class TestGetOwnNumbers:
 
 # ── POST /sms ─────────────────────────────────────────────────────────────────
 
+class TestGetContacts:
+
+    def test_returns_configured_contacts(self, client, monkeypatch):
+        from app.config import _config
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Alice': '+8613500000001',
+        })
+
+        resp = client.get('/contacts')
+
+        assert resp.status_code == 200
+        assert resp.json == {'Alice': '+8613500000001'}
+
+    def test_post_creates_contact(self, client):
+        resp = client.post('/contacts', json={
+            'alias': 'Alice',
+            'phone_number': '+8613500000001',
+        })
+
+        assert resp.status_code == 200
+        assert resp.json == {
+            'alias': 'Alice',
+            'phone_number': '+8613500000001',
+        }
+        assert client.get('/contacts').json == {
+            'Alice': '+8613500000001',
+        }
+
+    def test_delete_removes_contact(self, client):
+        client.post('/contacts', json={
+            'alias': 'Alice',
+            'phone_number': '+8613500000001',
+        })
+
+        resp = client.delete('/contacts/alice')
+
+        assert resp.status_code == 200
+        assert client.get('/contacts').json == {}
+
+
 class TestPostSms:
 
     def test_valid_request_returns_id(self, client):
@@ -205,6 +245,29 @@ class TestPostSms:
             resp = client.post('/sms', json=VALID_SMS_BODY)
         assert resp.status_code == 500
 
+    def test_aliases_are_resolved_before_inserting(
+            self, client, monkeypatch):
+        from app.config import _config
+        from app.main import GSMStore
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Own': '+8613500000001',
+            'Alice': '+8613500000002',
+        })
+        GSMStore.sim_card_db.update(
+            '/dev/ttyUSB0', '+8613500000001',
+            call_enabled=True, sms_enabled=True)
+
+        resp = client.post('/sms', json={
+            'sender': 'own',
+            'recipient': 'alice',
+            'content': 'Hello!',
+        })
+
+        assert resp.status_code == 200
+        row = GSMStore.pending_sms_db.get(resp.json['id'])
+        assert row['sender'] == '+8613500000001'
+        assert row['recipient'] == '+8613500000002'
+
 
 class TestPostCalls:
 
@@ -244,6 +307,28 @@ class TestPostCalls:
             resp = client.post('/calls', json=VALID_CALL_BODY)
         assert resp.status_code == 500
 
+    def test_aliases_are_resolved_before_inserting(
+            self, client, monkeypatch):
+        from app.config import _config
+        from app.main import GSMStore
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Own': '+8613500000001',
+            'Alice': '+8613500000002',
+        })
+        GSMStore.sim_card_db.update(
+            '/dev/ttyUSB0', '+8613500000001',
+            call_enabled=True, sms_enabled=True)
+
+        resp = client.post('/calls', json={
+            'caller': 'own',
+            'recipient': 'alice',
+        })
+
+        assert resp.status_code == 200
+        row = GSMStore.phone_call_db.get(resp.json['id'])
+        assert row['own_number'] == '+8613500000001'
+        assert row['other_number'] == '+8613500000002'
+
 
 class TestGetCalls:
 
@@ -262,6 +347,24 @@ class TestGetCalls:
         assert resp.json[0]['status'] == 'CREATED'
         assert resp.json[0]['caller'] == '+8613500000001'
         assert resp.json[0]['recipient'] == '+8613500000002'
+
+    def test_list_calls_includes_alias_fields(self, client, monkeypatch):
+        from app.config import _config
+        from app.main import GSMStore
+        monkeypatch.setitem(_config, 'CONTACTS', {
+            'Own': '+8613500000001',
+            'Alice': '+8613500000002',
+        })
+        GSMStore.phone_call_db.insert(
+            'OUTGOING', '+8613500000001', '+8613500000002', 'CREATED')
+
+        resp = client.get('/calls', query_string={'own_number': 'own'})
+
+        assert resp.status_code == 200
+        assert resp.json[0]['own_number_alias'] == 'Own'
+        assert resp.json[0]['other_number_alias'] == 'Alice'
+        assert resp.json[0]['caller_alias'] == 'Own'
+        assert resp.json[0]['recipient_alias'] == 'Alice'
 
     def test_list_calls_filters_by_status(self, client):
         from app.main import GSMStore

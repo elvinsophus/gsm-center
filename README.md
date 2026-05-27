@@ -202,7 +202,7 @@ Queue an outgoing call:
 
 ```bash
 python manage.py call +8613512345678 +8613812345678
-python manage.py list-phone-calls +8613512345678
+python manage.py list-calls +8613512345678
 ```
 
 For incoming ringing calls, `answer-call` and `hangup-call` may omit the call
@@ -241,6 +241,9 @@ host.
 
 ```text
 GET  /own-numbers
+GET  /contacts
+POST /contacts
+DELETE /contacts/<alias>
 GET  /audio/devices
 GET  /audio/devices/<name>
 POST /audio/devices/<name>/test-record
@@ -262,12 +265,15 @@ POST /calls/<id>/hangup
 
 ```bash
 python manage.py loop [PORT]
-python manage.py list-sent-smss [SENDER] -n 10
-python manage.py list-received-smss [RCPT] -n 10
-python manage.py list-smss [NUMBER] -n 10
+python manage.py list-contacts
+python manage.py set-contact ALIAS PHONE_NUMBER
+python manage.py delete-contact ALIAS
+python manage.py list-sent-smses [SENDER] -n 10
+python manage.py list-received-smses [RCPT] -n 10
+python manage.py list-smses [NUMBER] -n 10
 python manage.py list-sms-dialog NUM1 NUM2 -n 10
 python manage.py preview-sms-dialogs [NUM] -n 10
-python manage.py list-phone-calls [OWN_NUMBER] -n 10
+python manage.py list-calls [OWN_NUMBER] -n 10
 python manage.py call CALLER RECIPIENT
 python manage.py answer-call [CALL_ID]
 python manage.py hangup-call [CALL_ID]
@@ -283,6 +289,10 @@ python manage.py test-audio-play NAME PATH                 # NAME: AUDIO_DEVICES
 Prefer grouped SMS and call settings for new config:
 
 ```yaml
+CONTACTS:
+  alice: "+8613512345678"
+  bob: "+8613812345678"
+
 DEVICES:
   /dev/ttyUSB0:
     baudrate: 115200
@@ -297,6 +307,8 @@ DEVICES:
 
     calls:
       enabled: yes
+      outgoing:
+        answer_timeout: 45
       audio_device: gsm_usb
       hooks:
         received:
@@ -328,6 +340,20 @@ DEVICES:
             command: "./scripts/on-recording-failed.sh"
             env: {}
 ```
+
+`CONTACTS` is optional seed data for the `contact` table. Aliases may be used
+anywhere a sender, recipient, caller, callee, own number, or peer number is
+accepted by the API or CLI. Aliases are resolved to phone numbers before SMSes
+and calls are stored, so history tables still contain only phone numbers. Edit
+contacts dynamically with `set-contact`/`delete-contact` or the `/contacts`
+API. Alias names must start with a letter and contain only letters, numbers,
+underscores, dots, or hyphens; alias matching is case-insensitive, and each
+normalized phone number may have only one alias.
+
+`calls.outgoing.answer_timeout` is optional and defaults to `0`, which disables
+the local timeout. When set to a positive number, unanswered outgoing calls are
+hung up after that many seconds and recorded with
+`ended_reason=outgoing_answer_timeout`.
 
 Legacy flat keys such as `sms_enabled`, `call_enabled`,
 `on_sms_received`, and `on_call_received` are still supported.
